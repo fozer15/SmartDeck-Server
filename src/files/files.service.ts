@@ -2,7 +2,6 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-import * as fs from 'fs';
 import { Readable } from 'stream';
 
 @Injectable()
@@ -32,12 +31,10 @@ export class FilesService {
       new PutObjectCommand({
         Bucket: this.bucketName,
         Key: r2Key,
-        Body: fs.readFileSync(file.path),
+        Body: file.buffer,
         ContentType: file.mimetype,
       }),
     );
-
-    fs.unlinkSync(file.path);
 
     return this.prisma.uploadedFile.create({
       data: {

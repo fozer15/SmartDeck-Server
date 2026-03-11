@@ -10,8 +10,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import * as path from 'path';
+import { memoryStorage } from 'multer';
 import { FilesService } from './files.service';
 import { UploadFileDto } from './dto/upload-file.dto';
 
@@ -22,11 +21,7 @@ export class FilesController {
   @Post('upload')
   @UseInterceptors(
     FileInterceptor('pdf', {
-      storage: diskStorage({
-        destination: './uploads',
-        filename: (req, file, cb) =>
-          cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`),
-      }),
+      storage: memoryStorage(),
       fileFilter: (req, file, cb) => {
         if (file.mimetype !== 'application/pdf') return cb(new BadRequestException('Only PDF files allowed'), false);
         cb(null, true);

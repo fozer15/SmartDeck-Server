@@ -3,3 +3,5 @@ uploads/
 .env
 *.log
 .DS_Store
+dist/
+client/
