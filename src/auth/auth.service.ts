@@ -2,7 +2,6 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import { UsersService } from '../users/users.service';
-import { AuthProvider } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
@@ -30,19 +29,9 @@ export class AuthService {
       // Extract user info from Firebase token
       const { uid, email, name, picture, firebase } = decodedToken;
       
-      // Determine provider from Firebase token
-      let provider: AuthProvider = 'email';
-      if (firebase.sign_in_provider === 'google.com') {
-        provider = 'google';
-      } else if (firebase.sign_in_provider === 'apple.com') {
-        provider = 'apple';
-      }
-
-      // Sync user to database
       const user = await this.usersService.findOrCreate({
-        provider,
-        providerAccountId: uid,
-        email: email || undefined,
+        id: uid,
+        email: email,
         name: name || undefined,
         avatarUrl: picture || undefined,
       });
@@ -52,6 +41,7 @@ export class AuthService {
         accessToken: idToken, // You can use Firebase token or generate your own JWT
       };
     } catch (error) {
+      console.error('Error verifying Firebase ID token:', error);
       throw new UnauthorizedException('Invalid Firebase token');
     }
   }

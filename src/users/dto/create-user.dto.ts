@@ -1,12 +1,8 @@
-import { IsEmail, IsEnum, IsOptional, IsString } from 'class-validator';
-import { AuthProvider} from '@prisma/client';
+import { IsEmail, IsOptional, IsString } from 'class-validator';
 
 export class CreateUserDto {
-  @IsEnum(AuthProvider)
-  provider: AuthProvider;
-
   @IsString()
-  providerAccountId: string;
+  id: string; // Firebase UID
 
   @IsOptional()
   @IsEmail()
@@ -19,16 +15,4 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   avatarUrl?: string;
-
-  @IsOptional()
-  @IsString()
-  passwordHash?: string; // only for email provider
-
-  @IsOptional()
-  @IsString()
-  accessToken?: string;
-
-  @IsOptional()
-  @IsString()
-  refreshToken?: string;
 }

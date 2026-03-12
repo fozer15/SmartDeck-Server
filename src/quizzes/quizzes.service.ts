@@ -89,7 +89,9 @@ Guidelines:
           userId: dto.userId,
           rigorIndex: quizData.rigorIndex,
           files: {
-            create: dto.fileIds.map(fileId => ({ fileId })),
+            create: dto.fileIds.map(fileId => ({
+              file: { connect: { id: fileId } }
+            })),
           },
           questions: {
             create: quizData.quizzes.map((q, index) => ({

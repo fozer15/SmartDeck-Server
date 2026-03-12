@@ -7,46 +7,30 @@ export class UsersService {
   constructor(private prisma: PrismaService) {}
 
   async findOrCreate(dto: CreateUserDto) {
-    // 1. Already signed in with this exact provider before → return that user
-    const existingAccount = await this.prisma.account.findUnique({
-      where: { provider_providerAccountId: { provider: dto.provider, providerAccountId: dto.providerAccountId } },
-      include: { user: true },
+    // Check if user already exists (using Firebase UID)
+    const existingUser = await this.prisma.user.findUnique({
+      where: { id: dto.id },
     });
-    if (existingAccount) return existingAccount.user;
 
-    // 2. A User with this email already exists (e.g. signed up with email, now linking Google)
-    //    → attach a new Account to the existing User instead of creating a duplicate
-    if (dto.email) {
-      const existingUser = await this.prisma.user.findUnique({ where: { email: dto.email } });
-      if (existingUser) {
-        await this.prisma.account.create({
-          data: {
-            userId: existingUser.id,
-            provider: dto.provider,
-            providerAccountId: dto.providerAccountId,
-            accessToken: dto.accessToken,
-            refreshToken: dto.refreshToken,
-          },
-        });
-        return existingUser;
-      }
+    if (existingUser) {
+      // Update user info in case it changed in Firebase
+      return this.prisma.user.update({
+        where: { id: dto.id },
+        data: {
+          email: dto.email,
+          name: dto.name,
+          avatarUrl: dto.avatarUrl,
+        },
+      });
     }
 
-    // 3. Completely new user → create User + Account together
+    // Create new user with Firebase UID as ID
     return this.prisma.user.create({
       data: {
+        id: dto.id,
         email: dto.email,
         name: dto.name,
         avatarUrl: dto.avatarUrl,
-        accounts: {
-          create: {
-            provider: dto.provider,
-            providerAccountId: dto.providerAccountId,
-            passwordHash: dto.passwordHash,
-            accessToken: dto.accessToken,
-            refreshToken: dto.refreshToken,
-          },
-        },
       },
     });
   }
@@ -58,7 +42,6 @@ export class UsersService {
   async findOne(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      include: { accounts: { select: { provider: true, createdAt: true } } },
     });
     if (!user) throw new NotFoundException('User not found');
     return user;

@@ -7,88 +7,62 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum AuthProvider {
-  google
-  apple
-  email
-}
-
 model User {
-  id        String          @id @default(cuid())
-  email     String?         @unique
+  id        String   @id 
+  email     String   @unique 
   name      String?
   avatarUrl String?
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
-  accounts  Account[]
-  files     UploadedFile[]
-  quizzes   GeneratedQuiz[]
-}
-
-model Account {
-  id                String       @id @default(cuid())
-  userId            String
-  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  provider          AuthProvider
-  providerAccountId String
-  passwordHash      String?      // only for email provider
-  accessToken       String?
-  refreshToken      String?
-  expiresAt         DateTime?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-
-  @@unique([provider, providerAccountId])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  files   UploadedFile[]
+  quizzes GeneratedQuiz[]
 }
 
 model UploadedFile {
-  id           String      @id @default(cuid())
+  id           String   @id @default(cuid())
   userId       String
-  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   originalName String
   r2Key        String
   mimeType     String
   size         Int
-  createdAt    DateTime    @default(now())
-  quizFiles    QuizFile[]
+  createdAt    DateTime @default(now())
+  quizzes      GeneratedQuiz[] 
 }
 
 model GeneratedQuiz {
-  id         String         @id @default(cuid())
+  id         String   @id @default(cuid())
   userId     String
-  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  files      QuizFile[]
-  questions  QuizQuestion[]
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   rigorIndex Float
-  createdAt  DateTime       @default(now())
+  createdAt  DateTime @default(now())
+  files      UploadedFile[] 
+  questions  QuizQuestion[]
 }
 
-model QuizFile {
-  id        String        @id @default(cuid())
-  quizId    String
-  quiz      GeneratedQuiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  fileId    String
-  file      UploadedFile  @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  createdAt DateTime      @default(now())
-
-  @@unique([quizId, fileId])
-  @@index([quizId])
-  @@index([fileId])
+enum QuestionTier {
+  recall
+  application
+  analysis
 }
 
 model QuizQuestion {
-  id            String        @id @default(cuid())
+  id            String       @id @default(cuid())
   quizId        String
   quiz          GeneratedQuiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
   question      String
   options       String[]
   correctAnswer String
   explanation   String
-  tier          String        // recall, application, analysis
+  tier          QuestionTier
   topic         String
   orderIndex    Int
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-
+  timesAnswered Int       @default(0)
+  timesCorrect  Int       @default(0)
+  streak        Int       @default(0)
+  lastReviewed  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
   @@index([quizId])
 }
