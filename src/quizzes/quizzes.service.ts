@@ -66,7 +66,7 @@ Guidelines:
 
       // Generate quiz from all files
       const response = await this.genAI.models.generateContent({
-        model: 'gemini-2.5-flash-preview',
+        model: 'gemini-3.1-flash-lite-preview',
         contents: [
           {
             parts: [
@@ -89,9 +89,7 @@ Guidelines:
           userId: dto.userId,
           rigorIndex: quizData.rigorIndex,
           files: {
-            create: dto.fileIds.map(fileId => ({
-              file: { connect: { id: fileId } }
-            })),
+            connect: dto.fileIds.map(fileId => ({ id: fileId })),
           },
           questions: {
             create: quizData.quizzes.map((q, index) => ({
@@ -107,7 +105,7 @@ Guidelines:
         },
         include: {
           questions: { orderBy: { orderIndex: 'asc' } },
-          files: { include: { file: { select: { originalName: true } } } },
+          files: { select: { id: true, originalName: true } },
         },
       });
     } finally {
@@ -128,7 +126,7 @@ Guidelines:
     return this.prisma.generatedQuiz.findMany({
       where: { userId },
       include: {
-        files: { include: { file: { select: { originalName: true } } } },
+        files: { select: { id: true, originalName: true } },
         questions: { orderBy: { orderIndex: 'asc' } },
       },
       orderBy: { createdAt: 'desc' },
@@ -139,7 +137,7 @@ Guidelines:
     return this.prisma.generatedQuiz.findUnique({
       where: { id },
       include: {
-        files: { include: { file: { select: { originalName: true } } } },
+        files: { select: { id: true, originalName: true } },
         questions: { orderBy: { orderIndex: 'asc' } },
       },
     });
