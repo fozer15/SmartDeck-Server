@@ -1,17 +1,39 @@
 import { z } from 'zod';
 
-export const quizQuestionSchema = z.object({
-  question: z.string().describe('The quiz question text'),
-  options: z.array(z.string()).length(4).describe('Four multiple choice options'),
-  correctAnswer: z.string().describe('The correct answer from the options'),
-  explanation: z.string().describe('Brief explanation of why this answer is correct'),
+const questionMetaSchema = z.object({
   tier: z
     .enum(['recall', 'application', 'analysis'])
     .describe(
       "Bloom's Taxonomy tier: recall=basic memorization, application=using concepts in a scenario, analysis=connecting multiple concepts or evaluating tradeoffs",
     ),
   topic: z.string().describe('The main topic or concept this question covers'),
+  explanation: z.string().optional().describe('Brief explanation, teaching note, or rationale for the answer'),
 });
+
+const multipleChoiceQuestionSchema = questionMetaSchema.extend({
+  format: z.literal('multiple_choice').describe('Multiple-choice question with selectable options'),
+  question: z.string().describe('The quiz question text'),
+  options: z.array(z.string()).length(4).describe('Exactly four options for multiple choice'),
+  correctAnswer: z.string().describe('The correct option text'),
+});
+
+const flashcardQuestionSchema = questionMetaSchema.extend({
+  format: z.literal('flashcard').describe('Flashcard style prompt and answer'),
+  question: z.string().describe('Front side prompt of the flashcard'),
+  correctAnswer: z.string().describe('Back side answer of the flashcard'),
+});
+
+const shortAnswerQuestionSchema = questionMetaSchema.extend({
+  format: z.literal('short_answer').describe('Short-answer question with expected answer'),
+  question: z.string().describe('The short-answer question text'),
+  correctAnswer: z.string().describe('Expected short answer (or canonical answer)'),
+});
+
+export const quizQuestionSchema = z.discriminatedUnion('format', [
+  multipleChoiceQuestionSchema,
+  flashcardQuestionSchema,
+  shortAnswerQuestionSchema,
+]);
 
 export const quizResponseSchema = z.object({
   quizzes: z.array(quizQuestionSchema).describe('Array of quiz questions'),

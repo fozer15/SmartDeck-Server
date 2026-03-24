@@ -8,36 +8,56 @@ datasource db {
 }
 
 model User {
-  id        String   @id 
-  email     String   @unique 
-  name      String?
-  avatarUrl String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  files   UploadedFile[]
-  quizzes GeneratedQuiz[]
+  id            String          @id 
+  email         String          @unique 
+  name          String?
+  avatarUrl     String?
+  
+  // Gamification & Habit Tracking
+  globalStreak  Int             @default(0)
+  lastActive    DateTime?       
+  
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  
+  files         UploadedFile[]
+  quizzes       GeneratedQuiz[]
+  sessions      StudySession[]  // Links to active study states
 }
 
 model UploadedFile {
-  id           String   @id @default(cuid())
+  id           String          @id @default(cuid())
   userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   originalName String
   r2Key        String
   mimeType     String
   size         Int
-  createdAt    DateTime @default(now())
+  createdAt    DateTime        @default(now())
   quizzes      GeneratedQuiz[] 
 }
 
 model GeneratedQuiz {
-  id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  rigorIndex Float
-  createdAt  DateTime @default(now())
-  files      UploadedFile[] 
-  questions  QuizQuestion[]
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Deck Metadata & Marketplace Settings
+  title       String          @default("Untitled Deck")
+  subject     Subject?
+  questionCount Int?
+  questionTier  QuizTierPreference?
+  questionFormat QuizFormatPreference?
+  isPublic    Boolean         @default(false) 
+  
+  rigorIndex  Float
+  
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  
+  files       UploadedFile[] 
+  questions   QuizQuestion[]
+  sessions    StudySession[]
 }
 
 enum QuestionTier {
@@ -46,23 +66,144 @@ enum QuestionTier {
   analysis
 }
 
+// Allows for a "Mixed Deck" experience
+enum QuestionFormat {
+  multiple_choice
+  flashcard
+  short_answer
+}
+
+enum QuizTierPreference {
+  recall
+  application
+  analysis
+  mixed
+}
+
+enum QuizFormatPreference {
+  multiple_choice
+  flashcard
+  short_answer
+  mixed
+}
+
 model QuizQuestion {
-  id            String       @id @default(cuid())
+  id            String          @id @default(cuid())
   quizId        String
-  quiz          GeneratedQuiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  question      String
-  options       String[]
-  correctAnswer String
-  explanation   String
+  quiz          GeneratedQuiz   @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  
+  format        QuestionFormat  @default(multiple_choice)
   tier          QuestionTier
-  topic         String
-  orderIndex    Int
-  timesAnswered Int       @default(0)
-  timesCorrect  Int       @default(0)
-  streak        Int       @default(0)
+  
+  // Dynamic Content Fields
+  question      String          // Acts as the prompt or "Front" of a flashcard
+  options       String[]        // Leave empty if format is 'flashcard'
+  correctAnswer String          // Acts as the "Back" of a flashcard
+  explanation   String?         // Optional for simple vocabulary cards
+  
+  topic         String?         
+  orderIndex    Int             // The immutable original order from the PDF
+  
+  // Spaced Repetition / Mastery Stats
+  timesAnswered Int             @default(0)
+  timesCorrect  Int             @default(0)
+  streak        Int             @default(0)
   lastReviewed  DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
   
   @@index([quizId])
+}
+
+// The Active Session Engine (Handles Resuming & Shuffling)
+model StudySession {
+  id            String          @id @default(cuid())
+  userId        String
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quizId        String
+  quiz          GeneratedQuiz   @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  
+  // State Management
+  questionQueue String[]        // Array of QuizQuestion IDs (can be safely shuffled)
+  currentIndex  Int             @default(0)
+  
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([userId, quizId])
+  @@index([userId])
+}
+
+enum Subject {
+  BIOLOGY
+  CHEMISTRY
+  PHYSICS
+  MATHEMATICS
+  ALGEBRA
+  GEOMETRY
+  CALCULUS
+  STATISTICS
+  COMPUTER_SCIENCE
+  PROGRAMMING
+  DATA_STRUCTURES_ALGORITHMS
+  DATABASES
+  SOFTWARE_ENGINEERING
+  ARTIFICIAL_INTELLIGENCE
+  MACHINE_LEARNING
+  CYBERSECURITY
+  CLOUD_COMPUTING
+  OPERATING_SYSTEMS
+  NETWORKING
+  WEB_DEVELOPMENT
+  MOBILE_DEVELOPMENT
+  DATA_SCIENCE
+  ECONOMICS
+  MICROECONOMICS
+  MACROECONOMICS
+  FINANCE
+  ACCOUNTING
+  BUSINESS_ADMINISTRATION
+  MARKETING
+  MANAGEMENT
+  PROJECT_MANAGEMENT
+  ENTREPRENEURSHIP
+  LAW
+  CONSTITUTIONAL_LAW
+  CRIMINAL_LAW
+  INTERNATIONAL_RELATIONS
+  POLITICAL_SCIENCE
+  HISTORY
+  WORLD_HISTORY
+  GEOGRAPHY
+  PSYCHOLOGY
+  SOCIOLOGY
+  PHILOSOPHY
+  ETHICS
+  EDUCATION
+  MEDICINE
+  ANATOMY
+  NURSING
+  PUBLIC_HEALTH
+  PHARMACOLOGY
+  ENGINEERING
+  MECHANICAL_ENGINEERING
+  ELECTRICAL_ENGINEERING
+  CIVIL_ENGINEERING
+  INDUSTRIAL_ENGINEERING
+  ARCHITECTURE
+  ENVIRONMENTAL_SCIENCE
+  EARTH_SCIENCE
+  ASTRONOMY
+  LANGUAGE_LEARNING
+  ENGLISH
+  LITERATURE
+  LINGUISTICS
+  COMMUNICATION
+  JOURNALISM
+  ART_HISTORY
+  DESIGN
+  MUSIC_THEORY
+  EXAM_PREP
+  GENERAL_STUDIES
 }

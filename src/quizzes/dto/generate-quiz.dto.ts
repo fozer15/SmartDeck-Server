@@ -1,12 +1,35 @@
-import { IsString, IsOptional, IsArray } from 'class-validator';
+import { Subject, QuizTierPreference, QuizFormatPreference } from '@prisma/client';
+import { IsString, IsOptional, IsArray, IsEnum, IsInt, Min, Max } from 'class-validator';
 
 export class GenerateQuizDto {
   @IsString()
   userId: string;
 
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @IsOptional()
+  @IsEnum(Subject)
+  subject?: Subject;
+
   @IsArray()
   @IsString({ each: true })
   fileIds: string[];
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  questionCount?: number;
+
+  @IsOptional()
+  @IsEnum(QuizTierPreference)
+  questionTier?: QuizTierPreference;
+
+  @IsOptional()
+  @IsEnum(QuizFormatPreference)
+  questionFormat?: QuizFormatPreference;
 
   @IsOptional()
   @IsString()

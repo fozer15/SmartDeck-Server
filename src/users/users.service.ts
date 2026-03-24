@@ -1,10 +1,18 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  private r2PublicUrl: string;
+
+  constructor(
+    private prisma: PrismaService,
+    private config: ConfigService,
+  ) {
+    this.r2PublicUrl = this.config.get('R2_PUBLIC_URL')?.replace(/\/$/, '');
+  }
 
   async findOrCreate(dto: CreateUserDto) {
     // Check if user already exists (using Firebase UID)
@@ -14,18 +22,20 @@ export class UsersService {
 
     if (existingUser) {
       // Update user info in case it changed in Firebase
-      return this.prisma.user.update({
+      const updatedUser = await this.prisma.user.update({
         where: { id: dto.id },
         data: {
           email: dto.email,
           name: dto.name,
-          avatarUrl: dto.avatarUrl,
+          avatarUrl: existingUser.avatarUrl || dto.avatarUrl,
         },
       });
+
+      return this.withPublicAvatarUrl(updatedUser);
     }
 
     // Create new user with Firebase UID as ID
-    return this.prisma.user.create({
+    const createdUser = await this.prisma.user.create({
       data: {
         id: dto.id,
         email: dto.email,
@@ -33,10 +43,13 @@ export class UsersService {
         avatarUrl: dto.avatarUrl,
       },
     });
+
+    return this.withPublicAvatarUrl(createdUser);
   }
 
   async findAll() {
-    return this.prisma.user.findMany();
+    const users = await this.prisma.user.findMany();
+    return users.map((user) => this.withPublicAvatarUrl(user));
   }
 
   async findOne(id: string) {
@@ -44,6 +57,25 @@ export class UsersService {
       where: { id },
     });
     if (!user) throw new NotFoundException('User not found');
-    return user;
+    return this.withPublicAvatarUrl(user);
+  }
+
+  private withPublicAvatarUrl<T extends { avatarUrl: string | null }>(user: T): T {
+    return {
+      ...user,
+      avatarUrl: this.toPublicUrl(user.avatarUrl),
+    };
+  }
+
+  private toPublicUrl(value?: string | null) {
+    if (!value) {
+      return null;
+    }
+
+    if (/^https?:\/\//i.test(value)) {
+      return value;
+    }
+
+    return this.r2PublicUrl ? `${this.r2PublicUrl}/${value}` : value;
   }
 }
