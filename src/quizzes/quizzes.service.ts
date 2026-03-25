@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FilesService } from '../files/files.service';
 import { GoogleGenAI } from '@google/genai';
@@ -10,6 +11,16 @@ import { SubmitAnswerDto } from './dto/submit-answer.dto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{
+  include: {
+    quiz: {
+      include: {
+        questions: true;
+      };
+    };
+  };
+}>;
 
 @Injectable()
 export class QuizzesService {
@@ -370,28 +381,7 @@ Guidelines:
     return this.buildSessionPayload(updatedSession);
   }
 
-  private buildSessionPayload(session: {
-    id: string;
-    quizId: string;
-    currentIndex: number;
-    questionQueue: string[];
-    quiz: {
-      id: string;
-      title: string;
-      subject: string | null;
-      questions: Array<{
-        id: string;
-        format: string;
-        question: string;
-        options: string[];
-        correctAnswer: string;
-        explanation: string | null;
-        topic: string | null;
-        tier: string;
-        timesAnswered: number;
-      }>;
-    };
-  }) {
+  private buildSessionPayload(session: StudySessionWithQuiz) {
     const totalQuestions = session.questionQueue.length;
     const completedQuestions = Math.min(session.currentIndex, totalQuestions);
     const completionPercent = totalQuestions
