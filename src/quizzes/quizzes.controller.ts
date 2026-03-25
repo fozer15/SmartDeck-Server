@@ -33,6 +33,11 @@ export class QuizzesController {
     return this.quizzesService.submitAnswer(req.user.uid, sessionId, dto);
   }
 
+  @Post('sessions/:id/shuffle')
+  shuffleRemainingQuestions(@Param('id') sessionId: string, @Req() req: any) {
+    return this.quizzesService.shuffleRemainingQuestions(req.user.uid, sessionId);
+  }
+
   @Get()
   findAll(@Query('userId') userId: string) {
     return this.quizzesService.findAllByUser(userId);

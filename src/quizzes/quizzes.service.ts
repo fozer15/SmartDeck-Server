@@ -329,6 +329,47 @@ Guidelines:
     };
   }
 
+  async shuffleRemainingQuestions(userId: string, sessionId: string) {
+    const session = await this.prisma.studySession.findFirst({
+      where: { id: sessionId, userId },
+      include: {
+        quiz: {
+          include: {
+            questions: { orderBy: { orderIndex: 'asc' } },
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Study session not found');
+    }
+
+    const answered = session.questionQueue.slice(0, session.currentIndex);
+    const remaining = [...session.questionQueue.slice(session.currentIndex)];
+
+    for (let i = remaining.length - 1; i > 0; i -= 1) {
+      const randomIndex = Math.floor(Math.random() * (i + 1));
+      [remaining[i], remaining[randomIndex]] = [remaining[randomIndex], remaining[i]];
+    }
+
+    const questionQueue = [...answered, ...remaining];
+
+    const updatedSession = await this.prisma.studySession.update({
+      where: { id: session.id },
+      data: { questionQueue },
+      include: {
+        quiz: {
+          include: {
+            questions: { orderBy: { orderIndex: 'asc' } },
+          },
+        },
+      },
+    });
+
+    return this.buildSessionPayload(updatedSession);
+  }
+
   private buildSessionPayload(session: {
     id: string;
     quizId: string;
