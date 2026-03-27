@@ -27,7 +27,8 @@ export class FilesService {
   }
 
   async upload(userId: string, file: Express.Multer.File) {
-    const r2Key = `uploads/${userId}/files/${Date.now()}-${file.originalname}`;
+    const safeFileName = this.toStorageSafeFileName(file.originalname);
+    const r2Key = `uploads/${userId}/files/${Date.now()}-${safeFileName}`;
 
     await this.s3.send(
       new PutObjectCommand({
@@ -52,7 +53,7 @@ export class FilesService {
   }
 
   async uploadAvatar(userId: string, file: Express.Multer.File) {
-    const safeFileName = file.originalname.replace(/\s+/g, '-');
+    const safeFileName = this.toStorageSafeFileName(file.originalname);
     const r2Key = `uploads/${userId}/avatar/${Date.now()}-${safeFileName}`;
 
     await this.s3.send(
@@ -171,6 +172,27 @@ export class FilesService {
       .join('/');
 
     return this.r2PublicUrl ? `${this.r2PublicUrl}/${encodedKey}` : encodedKey;
+  }
+
+  private toStorageSafeFileName(fileName: string) {
+    const normalized = (fileName || 'file').normalize('NFKC').trim();
+    const baseName = normalized.split(/[\\/]/).pop() || 'file';
+
+    const lastDotIndex = baseName.lastIndexOf('.');
+    const rawName = lastDotIndex > 0 ? baseName.slice(0, lastDotIndex) : baseName;
+    const rawExt = lastDotIndex > 0 ? baseName.slice(lastDotIndex + 1) : '';
+
+    const safeName = rawName
+      .replace(/\s+/g, '-')
+      .replace(/[^a-zA-Z0-9._-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^[-.]+|[-.]+$/g, '') || 'file';
+
+    const safeExt = rawExt
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toLowerCase();
+
+    return safeExt ? `${safeName}.${safeExt}` : safeName;
   }
 }
 
