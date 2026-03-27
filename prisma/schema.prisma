@@ -103,12 +103,9 @@ model QuizQuestion {
   
   topic         String?         
   orderIndex    Int             // The immutable original order from the PDF
-  
-  // Spaced Repetition / Mastery Stats
-  timesAnswered Int             @default(0)
-  timesCorrect  Int             @default(0)
-  streak        Int             @default(0)
-  lastReviewed  DateTime?
+
+  // Session-scoped mastery stats are tracked in StudySessionQuestionProgress
+  sessionProgresses StudySessionQuestionProgress[]
   
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -127,12 +124,34 @@ model StudySession {
   // State Management
   questionQueue String[]        // Array of QuizQuestion IDs (can be safely shuffled)
   currentIndex  Int             @default(0)
+
+  questionProgress StudySessionQuestionProgress[]
   
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
   @@unique([userId, quizId])
   @@index([userId])
+}
+
+model StudySessionQuestionProgress {
+  id            String        @id @default(cuid())
+  sessionId     String
+  session       StudySession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId    String
+  question      QuizQuestion  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  timesAnswered Int           @default(0)
+  timesCorrect  Int           @default(0)
+  streak        Int           @default(0)
+  lastReviewed  DateTime?
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([sessionId, questionId])
+  @@index([sessionId])
+  @@index([questionId])
 }
 
 enum Subject {

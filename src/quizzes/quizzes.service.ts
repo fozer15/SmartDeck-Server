@@ -14,6 +14,7 @@ import * as os from 'os';
 
 type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{
   include: {
+    questionProgress: true;
     quiz: {
       include: {
         questions: true;
@@ -48,6 +49,20 @@ Guidelines:
     private config: ConfigService,
   ) {
     this.genAI = new GoogleGenAI({ apiKey: config.get('GEMINI_API_KEY') });
+  }
+
+  private async ensureSessionQuestionProgress(sessionId: string, questionQueue: string[]) {
+    if (!questionQueue.length) {
+      return;
+    }
+
+    await this.prisma.studySessionQuestionProgress.createMany({
+      data: questionQueue.map((questionId) => ({
+        sessionId,
+        questionId,
+      })),
+      skipDuplicates: true,
+    });
   }
 
   async generate(dto: GenerateQuizDto) {
@@ -178,14 +193,28 @@ Guidelines:
   }
 
   async findAllByUser(userId: string) {
-    return this.prisma.generatedQuiz.findMany({
+    const decks = await this.prisma.generatedQuiz.findMany({
       where: { userId },
       include: {
         files: { select: { id: true, originalName: true } },
-        questions: { orderBy: { orderIndex: 'asc' } },
+        sessions: {
+          where: { userId },
+          select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
+          orderBy: { updatedAt: 'desc' },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return decks.map((deck) => ({
+      ...deck,
+      sessions: deck.sessions.map((session) => ({
+        id: session.id,
+        currentIndex: session.currentIndex,
+        updatedAt: session.updatedAt,
+        questionQueueLength: session.questionQueue.length,
+      })),
+    }));
   }
 
   async findOne(id: string) {
@@ -235,6 +264,7 @@ Guidelines:
           currentIndex: 0,
         },
       });
+      await this.ensureSessionQuestionProgress(session.id, questionQueue);
     } else if (session.questionQueue.length === 0 && questionQueue.length > 0) {
       session = await this.prisma.studySession.update({
         where: { id: session.id },
@@ -243,6 +273,9 @@ Guidelines:
           currentIndex: 0,
         },
       });
+      await this.ensureSessionQuestionProgress(session.id, questionQueue);
+    } else {
+      await this.ensureSessionQuestionProgress(session.id, session.questionQueue);
     }
 
     return this.getSession(userId, session.id);
@@ -252,6 +285,7 @@ Guidelines:
     const session = await this.prisma.studySession.findFirst({
       where: { id: sessionId, userId },
       include: {
+        questionProgress: true,
         quiz: {
           include: {
             questions: { orderBy: { orderIndex: 'asc' } },
@@ -271,6 +305,7 @@ Guidelines:
     const session = await this.prisma.studySession.findFirst({
       where: { id: sessionId, userId },
       include: {
+        questionProgress: true,
         quiz: {
           include: {
             questions: { orderBy: { orderIndex: 'asc' } },
@@ -306,12 +341,22 @@ Guidelines:
       isCorrect = normalize(dto.answer) === normalize(question.correctAnswer);
     }
 
-    await this.prisma.quizQuestion.update({
-      where: { id: question.id },
+    const questionProgress = session.questionProgress.find((progress) => progress.questionId === question.id);
+    if (!questionProgress) {
+      await this.ensureSessionQuestionProgress(session.id, [question.id]);
+    }
+
+    await this.prisma.studySessionQuestionProgress.update({
+      where: {
+        sessionId_questionId: {
+          sessionId: session.id,
+          questionId: question.id,
+        },
+      },
       data: {
-        timesAnswered: { increment: 1 },
-        timesCorrect: { increment: isCorrect ? 1 : 0 },
-        streak: isCorrect ? question.streak + 1 : 0,
+        timesAnswered: (questionProgress?.timesAnswered ?? 0) + 1,
+        timesCorrect: (questionProgress?.timesCorrect ?? 0) + (isCorrect ? 1 : 0),
+        streak: isCorrect ? (questionProgress?.streak ?? 0) + 1 : 0,
         lastReviewed: new Date(),
       },
     });
@@ -322,6 +367,7 @@ Guidelines:
       where: { id: session.id },
       data: { currentIndex: nextIndex },
       include: {
+        questionProgress: true,
         quiz: {
           include: {
             questions: { orderBy: { orderIndex: 'asc' } },
@@ -344,6 +390,7 @@ Guidelines:
     const session = await this.prisma.studySession.findFirst({
       where: { id: sessionId, userId },
       include: {
+        questionProgress: true,
         quiz: {
           include: {
             questions: { orderBy: { orderIndex: 'asc' } },
@@ -370,6 +417,7 @@ Guidelines:
       where: { id: session.id },
       data: { questionQueue },
       include: {
+        questionProgress: true,
         quiz: {
           include: {
             questions: { orderBy: { orderIndex: 'asc' } },
@@ -392,6 +440,9 @@ Guidelines:
     const currentQuestion = currentQuestionId
       ? session.quiz.questions.find((q) => q.id === currentQuestionId) || null
       : null;
+    const currentQuestionProgress = currentQuestionId
+      ? session.questionProgress.find((progress) => progress.questionId === currentQuestionId) || null
+      : null;
 
     return {
       id: session.id,
@@ -403,7 +454,15 @@ Guidelines:
       completedQuestions,
       completionPercent,
       isCompleted: session.currentIndex >= totalQuestions,
-      currentQuestion,
+      currentQuestion: currentQuestion
+        ? {
+            ...currentQuestion,
+            timesAnswered: currentQuestionProgress?.timesAnswered ?? 0,
+            timesCorrect: currentQuestionProgress?.timesCorrect ?? 0,
+            streak: currentQuestionProgress?.streak ?? 0,
+            lastReviewed: currentQuestionProgress?.lastReviewed ?? null,
+          }
+        : null,
     };
   }
 }
