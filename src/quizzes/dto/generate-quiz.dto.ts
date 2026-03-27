@@ -2,9 +2,6 @@ import { Subject, QuizTierPreference, QuizFormatPreference } from '@prisma/clien
 import { IsString, IsOptional, IsArray, IsEnum, IsInt, Min, Max } from 'class-validator';
 
 export class GenerateQuizDto {
-  @IsString()
-  userId: string;
-
   @IsOptional()
   @IsString()
   title?: string;

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Query, Body, UseGuards, Req, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, UseGuards, Req, Delete } from '@nestjs/common';
 import { QuizzesService } from './quizzes.service';
 import { GenerateQuizDto } from './dto/generate-quiz.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -10,8 +10,8 @@ export class QuizzesController {
   constructor(private readonly quizzesService: QuizzesService) {}
 
   @Post('generate')
-  generate(@Body() dto: GenerateQuizDto) {
-    return this.quizzesService.generate(dto);
+  generate(@Req() req: any, @Body() dto: GenerateQuizDto) {
+    return this.quizzesService.generate(req.user.uid, dto);
   }
 
   @Post(':id/play')
@@ -39,8 +39,8 @@ export class QuizzesController {
   }
 
   @Get()
-  findAll(@Query('userId') userId: string) {
-    return this.quizzesService.findAllByUser(userId);
+  findAll(@Req() req: any) {
+    return this.quizzesService.findAllByUser(req.user.uid);
   }
 
   @Get(':id')

@@ -65,7 +65,7 @@ Guidelines:
     });
   }
 
-  async generate(dto: GenerateQuizDto) {
+  async generate(userId: string, dto: GenerateQuizDto) {
     // Upload all files to Gemini
     const uploadedFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
     const tempPaths: string[] = [];
@@ -116,7 +116,7 @@ Guidelines:
       // Create quiz with questions and file associations
       return this.prisma.generatedQuiz.create({
         data: {
-          userId: dto.userId,
+          userId,
           rigorIndex: quizData.rigorIndex,
           title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
           subject: dto.subject || undefined,

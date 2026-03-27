@@ -165,7 +165,12 @@ export class FilesService {
       return value;
     }
 
-    return this.r2PublicUrl ? `${this.r2PublicUrl}/${value}` : value;
+    const encodedKey = value
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+
+    return this.r2PublicUrl ? `${this.r2PublicUrl}/${encodedKey}` : encodedKey;
   }
 }
 
