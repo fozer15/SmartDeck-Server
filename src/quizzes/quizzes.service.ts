@@ -331,28 +331,10 @@ Guidelines:
     } else {
       await this.ensureSessionQuestionProgress(session.id, session.questionQueue);
     }
+
+    return this.getSessionByQuizId(userId, quizId);
   }
-
-  async getSession(userId: string, sessionId: string) {
-    const session = await this.prisma.studySession.findFirst({
-      where: { id: sessionId, userId },
-      include: {
-        questionProgress: true,
-        quiz: {
-          include: {
-            questions: { orderBy: { orderIndex: 'asc' } },
-          },
-        },
-      },
-    });
-
-    if (!session) {
-      throw new NotFoundException('Study session not found');
-    }
-
-    return this.buildSessionPayload(session);
-  }
-
+  
   async getSessionByQuizId(userId: string, quizId: string) {
     const session = await this.prisma.studySession.findFirst({
       where: { userId, quizId },

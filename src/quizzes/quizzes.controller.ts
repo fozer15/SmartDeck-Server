@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, UseGuards, Req, Delete, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, UseGuards, Req, Delete, Query } from '@nestjs/common';
 import { QuizzesService } from './quizzes.service';
 import { GenerateQuizDto } from './dto/generate-quiz.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -14,25 +14,19 @@ export class QuizzesController {
     return this.quizzesService.generate(req.user.uid, dto);
   }
 
-  @Post(':id/play')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async play(@Param('id') quizId: string, @Req() req: any, @Body() body?: { replay?: boolean }) {
-    await this.quizzesService.startOrResumeSession(req.user.uid, quizId, { replay: Boolean(body?.replay) });
+  @Post(':quizId/play')
+  play(@Param('quizId') quizId: string, @Req() req: any, @Body() body?: { replay?: boolean }) {
+    return this.quizzesService.startOrResumeSession(req.user.uid, quizId, { replay: Boolean(body?.replay) });
   }
 
-  @Get(':id/session')
-  getSessionByQuizId(@Param('id') quizId: string, @Req() req: any) {
+  @Get(':quizId/session')
+  getSessionByQuizId(@Param('quizId') quizId: string, @Req() req: any) {
     return this.quizzesService.getSessionByQuizId(req.user.uid, quizId);
   }
 
-  @Get('sessions/:id')
-  getSession(@Param('id') sessionId: string, @Req() req: any) {
-    return this.quizzesService.getSession(req.user.uid, sessionId);
-  }
-
-  @Get('sessions/:id/batch')
+  @Get('sessions/:sessionId/batch')
   getQuestionBatch(
-    @Param('id') sessionId: string,
+    @Param('sessionId') sessionId: string,
     @Req() req: any,
     @Query('offset') offset?: string,
     @Query('limit') limit?: string,
@@ -42,17 +36,17 @@ export class QuizzesController {
     return this.quizzesService.getQuestionBatch(req.user.uid, sessionId, parsedOffset, parsedLimit);
   }
 
-  @Post('sessions/:id/answer')
+  @Post('sessions/:sessionId/answer')
   submitAnswer(
-    @Param('id') sessionId: string,
+    @Param('sessionId') sessionId: string,
     @Req() req: any,
     @Body() dto: SubmitAnswerDto,
   ) {
     return this.quizzesService.submitAnswer(req.user.uid, sessionId, dto);
   }
 
-  @Post('sessions/:id/shuffle')
-  shuffleRemainingQuestions(@Param('id') sessionId: string, @Req() req: any) {
+  @Post('sessions/:sessionId/shuffle')
+  shuffleRemainingQuestions(@Param('sessionId') sessionId: string, @Req() req: any) {
     return this.quizzesService.shuffleRemainingQuestions(req.user.uid, sessionId);
   }
 
@@ -61,13 +55,13 @@ export class QuizzesController {
     return this.quizzesService.findAllByUser(req.user.uid);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.quizzesService.findOne(id);
+  @Get(':quizId')
+  findOne(@Param('quizId') quizId: string) {
+    return this.quizzesService.findOne(quizId);
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string, @Req() req: any) {
-    return this.quizzesService.removeByUser(req.user.uid, id);
+  @Delete(':quizId')
+  remove(@Param('quizId') quizId: string, @Req() req: any) {
+    return this.quizzesService.removeByUser(req.user.uid, quizId);
   }
 }
