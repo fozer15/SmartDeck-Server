@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, UseGuards, Req, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, UseGuards, Req, Delete, Query, HttpCode, HttpStatus } from '@nestjs/common';
 import { QuizzesService } from './quizzes.service';
 import { GenerateQuizDto } from './dto/generate-quiz.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -15,13 +15,31 @@ export class QuizzesController {
   }
 
   @Post(':id/play')
-  play(@Param('id') quizId: string, @Req() req: any) {
-    return this.quizzesService.startOrResumeSession(req.user.uid, quizId);
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async play(@Param('id') quizId: string, @Req() req: any, @Body() body?: { replay?: boolean }) {
+    await this.quizzesService.startOrResumeSession(req.user.uid, quizId, { replay: Boolean(body?.replay) });
+  }
+
+  @Get(':id/session')
+  getSessionByQuizId(@Param('id') quizId: string, @Req() req: any) {
+    return this.quizzesService.getSessionByQuizId(req.user.uid, quizId);
   }
 
   @Get('sessions/:id')
   getSession(@Param('id') sessionId: string, @Req() req: any) {
     return this.quizzesService.getSession(req.user.uid, sessionId);
+  }
+
+  @Get('sessions/:id/batch')
+  getQuestionBatch(
+    @Param('id') sessionId: string,
+    @Req() req: any,
+    @Query('offset') offset?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsedOffset = Number.isNaN(Number(offset)) ? 0 : Number(offset);
+    const parsedLimit = Number.isNaN(Number(limit)) ? undefined : Number(limit);
+    return this.quizzesService.getQuestionBatch(req.user.uid, sessionId, parsedOffset, parsedLimit);
   }
 
   @Post('sessions/:id/answer')

@@ -11,4 +11,12 @@ export class SubmitAnswerDto {
   @IsOptional()
   @IsBoolean()
   correct?: boolean;
+
+  @IsOptional()
+  @IsString()
+  attemptId?: string;
+
+  @IsOptional()
+  @IsString()
+  clientTimestamp?: string;
 }

@@ -26,6 +26,11 @@ type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{
 @Injectable()
 export class QuizzesService {
   private genAI: GoogleGenAI;
+  private r2PublicUrl: string;
+  private readonly processedAttempts = new Map<string, number>();
+  private readonly processedAttemptTtlMs = 30 * 60 * 1000;
+  private readonly defaultBatchSize = 5;
+  private readonly maxBatchSize = 50;
 
   private readonly systemPrompt = `You are an expert educational content creator. Analyze the provided PDF and generate quiz questions categorized by Bloom's Taxonomy cognitive tiers:
 
@@ -49,6 +54,38 @@ Guidelines:
     private config: ConfigService,
   ) {
     this.genAI = new GoogleGenAI({ apiKey: config.get('GEMINI_API_KEY') });
+    this.r2PublicUrl = config.get('R2_PUBLIC_URL')?.replace(/\/$/, '');
+  }
+
+  private toPublicUrl(value?: string | null) {
+    if (!value) {
+      return null;
+    }
+
+    if (/^https?:\/\//i.test(value)) {
+      return value;
+    }
+
+    const encodedKey = value
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+
+    return this.r2PublicUrl ? `${this.r2PublicUrl}/${encodedKey}` : encodedKey;
+  }
+
+  private withDeckFilePublicUrls<T extends { files?: Array<{ r2Key?: string | null }> }>(deck: T): T {
+    if (!Array.isArray(deck.files)) {
+      return deck;
+    }
+
+    return {
+      ...deck,
+      files: deck.files.map((file) => ({
+        ...file,
+        publicUrl: this.toPublicUrl(file.r2Key),
+      })),
+    };
   }
 
   private async ensureSessionQuestionProgress(sessionId: string, questionQueue: string[]) {
@@ -114,7 +151,7 @@ Guidelines:
       const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
 
       // Create quiz with questions and file associations
-      return this.prisma.generatedQuiz.create({
+      const createdDeck = await this.prisma.generatedQuiz.create({
         data: {
           userId,
           rigorIndex: quizData.rigorIndex,
@@ -141,9 +178,11 @@ Guidelines:
         },
         include: {
           questions: { orderBy: { orderIndex: 'asc' } },
-          files: { select: { id: true, originalName: true } },
+          files: { select: { id: true, originalName: true, r2Key: true } },
         },
       });
+
+      return this.withDeckFilePublicUrls(createdDeck);
     } finally {
       // Cleanup temp files
       for (const tempPath of tempPaths) {
@@ -196,7 +235,7 @@ Guidelines:
     const decks = await this.prisma.generatedQuiz.findMany({
       where: { userId },
       include: {
-        files: { select: { id: true, originalName: true } },
+        files: { select: { id: true, originalName: true, r2Key: true } },
         sessions: {
           where: { userId },
           select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
@@ -206,25 +245,30 @@ Guidelines:
       orderBy: { createdAt: 'desc' },
     });
 
-    return decks.map((deck) => ({
-      ...deck,
-      sessions: deck.sessions.map((session) => ({
-        id: session.id,
-        currentIndex: session.currentIndex,
-        updatedAt: session.updatedAt,
-        questionQueueLength: session.questionQueue.length,
-      })),
-    }));
+    return decks.map((deck) => {
+      const deckWithPublicUrls = this.withDeckFilePublicUrls(deck);
+      return {
+        ...deckWithPublicUrls,
+        sessions: deck.sessions.map((session) => ({
+          id: session.id,
+          currentIndex: session.currentIndex,
+          updatedAt: session.updatedAt,
+          questionQueueLength: session.questionQueue.length,
+        })),
+      };
+    });
   }
 
   async findOne(id: string) {
-    return this.prisma.generatedQuiz.findUnique({
+    const deck = await this.prisma.generatedQuiz.findUnique({
       where: { id },
       include: {
-        files: { select: { id: true, originalName: true } },
+        files: { select: { id: true, originalName: true, r2Key: true } },
         questions: { orderBy: { orderIndex: 'asc' } },
       },
     });
+
+    return deck ? this.withDeckFilePublicUrls(deck) : deck;
   }
 
   async removeByUser(userId: string, quizId: string) {
@@ -239,7 +283,7 @@ Guidelines:
     return { success: true };
   }
 
-  async startOrResumeSession(userId: string, quizId: string) {
+  async startOrResumeSession(userId: string, quizId: string, options?: { replay?: boolean }) {
     const quiz = await this.prisma.generatedQuiz.findFirst({
       where: { id: quizId, userId },
       include: { questions: { orderBy: { orderIndex: 'asc' } } },
@@ -265,6 +309,16 @@ Guidelines:
         },
       });
       await this.ensureSessionQuestionProgress(session.id, questionQueue);
+    } else if (options?.replay) {
+      // Replay resets queue order and index, but keeps accumulated progress rows.
+      session = await this.prisma.studySession.update({
+        where: { id: session.id },
+        data: {
+          questionQueue,
+          currentIndex: 0,
+        },
+      });
+      await this.ensureSessionQuestionProgress(session.id, questionQueue);
     } else if (session.questionQueue.length === 0 && questionQueue.length > 0) {
       session = await this.prisma.studySession.update({
         where: { id: session.id },
@@ -277,8 +331,6 @@ Guidelines:
     } else {
       await this.ensureSessionQuestionProgress(session.id, session.questionQueue);
     }
-
-    return this.getSession(userId, session.id);
   }
 
   async getSession(userId: string, sessionId: string) {
@@ -301,6 +353,158 @@ Guidelines:
     return this.buildSessionPayload(session);
   }
 
+  async getSessionByQuizId(userId: string, quizId: string) {
+    const session = await this.prisma.studySession.findFirst({
+      where: { userId, quizId },
+      include: {
+        quiz: {
+          select: {
+            title: true,
+            subject: true,
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Study session not found');
+    }
+
+    const totalQuestions = session.questionQueue.length;
+    const completedQuestions = Math.min(session.currentIndex, totalQuestions);
+    const completionPercent = totalQuestions
+      ? Math.round((completedQuestions / totalQuestions) * 100)
+      : 0;
+
+    return {
+      id: session.id,
+      quizId: session.quizId,
+      title: session.quiz.title,
+      subject: session.quiz.subject,
+      questionQueue: session.questionQueue,
+      currentIndex: session.currentIndex,
+      totalQuestions,
+      completedQuestions,
+      completionPercent,
+      isCompleted: session.currentIndex >= totalQuestions,
+    };
+  }
+
+  async getQuestionBatch(userId: string, sessionId: string, offset = 0, limit?: number) {
+    const safeOffset = Math.max(0, offset);
+    const requestedLimit = typeof limit === 'number' ? limit : this.defaultBatchSize;
+    const safeLimit = Math.max(1, Math.min(this.maxBatchSize, requestedLimit));
+
+    const session = await this.prisma.studySession.findFirst({
+      where: { id: sessionId, userId },
+      include: {
+        questionProgress: true,
+        quiz: {
+          include: {
+            questions: { orderBy: { orderIndex: 'asc' } },
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Study session not found');
+    }
+
+    const questionIds = session.questionQueue.slice(safeOffset, safeOffset + safeLimit);
+    const batch = questionIds
+      .map((questionId) => {
+        const question = session.quiz.questions.find((item) => item.id === questionId);
+        if (!question) {
+          return null;
+        }
+
+        const progress = session.questionProgress.find((item) => item.questionId === questionId);
+        return {
+          ...question,
+          timesAnswered: progress?.timesAnswered ?? 0,
+          timesCorrect: progress?.timesCorrect ?? 0,
+          streak: progress?.streak ?? 0,
+          lastReviewed: progress?.lastReviewed ?? null,
+        };
+      })
+      .filter(Boolean);
+
+    return { batch };
+  }
+
+  private async scoreAndPersistAnswer(
+    session: StudySessionWithQuiz,
+    answerItem: {
+      questionId?: string;
+      answer?: string;
+      correct?: boolean;
+      attemptId?: string;
+      clientTimestamp?: string;
+    },
+  ) {
+    if (!answerItem.questionId) {
+      return;
+    }
+
+    const question = session.quiz.questions.find((item) => item.id === answerItem.questionId);
+    if (!question) {
+      return;
+    }
+
+    const normalize = (value?: string) => (value || '').trim().toLowerCase();
+    const isCorrect = question.format === 'flashcard'
+      ? Boolean(answerItem.correct)
+      : normalize(answerItem.answer) === normalize(question.correctAnswer);
+
+    const progress = session.questionProgress.find((item) => item.questionId === question.id);
+    if (!progress) {
+      await this.ensureSessionQuestionProgress(session.id, [question.id]);
+    }
+
+    await this.prisma.studySessionQuestionProgress.update({
+      where: {
+        sessionId_questionId: {
+          sessionId: session.id,
+          questionId: question.id,
+        },
+      },
+      data: {
+        timesAnswered: (progress?.timesAnswered ?? 0) + 1,
+        timesCorrect: (progress?.timesCorrect ?? 0) + (isCorrect ? 1 : 0),
+        streak: isCorrect ? (progress?.streak ?? 0) + 1 : 0,
+        lastReviewed: new Date(),
+      },
+    });
+  }
+
+  private pruneProcessedAttempts() {
+    const cutoff = Date.now() - this.processedAttemptTtlMs;
+    for (const [key, value] of this.processedAttempts.entries()) {
+      if (value < cutoff) {
+        this.processedAttempts.delete(key);
+      }
+    }
+  }
+
+  private buildAttemptKey(userId: string, sessionId: string, attemptId?: string) {
+    if (!attemptId) {
+      return null;
+    }
+
+    return `${userId}:${sessionId}:${attemptId}`;
+  }
+
+  private hasProcessedAttempt(key: string) {
+    this.pruneProcessedAttempts();
+    return this.processedAttempts.has(key);
+  }
+
+  private markProcessedAttempt(key: string) {
+    this.pruneProcessedAttempts();
+    this.processedAttempts.set(key, Date.now());
+  }
+
   async submitAnswer(userId: string, sessionId: string, dto: SubmitAnswerDto) {
     const session = await this.prisma.studySession.findFirst({
       where: { id: sessionId, userId },
@@ -318,72 +522,35 @@ Guidelines:
       throw new NotFoundException('Study session not found');
     }
 
-    const currentQuestionId = session.questionQueue[session.currentIndex];
-    if (!currentQuestionId) {
-      return this.buildSessionPayload(session);
+    if (!dto.questionId) {
+      throw new BadRequestException('questionId is required');
     }
 
-    if (dto.questionId !== currentQuestionId) {
+    const attemptKey = this.buildAttemptKey(userId, sessionId, dto.attemptId);
+    if (attemptKey && this.hasProcessedAttempt(attemptKey)) {
+      return { success: true };
+    }
+
+    const currentQuestionId = session.questionQueue[session.currentIndex];
+    if (currentQuestionId && dto.questionId !== currentQuestionId) {
       throw new ForbiddenException('Answer does not match current card');
     }
 
-    const question = session.quiz.questions.find((q) => q.id === currentQuestionId);
-    if (!question) {
-      throw new NotFoundException('Question not found');
+    await this.scoreAndPersistAnswer(session, dto);
+    if (attemptKey) {
+      this.markProcessedAttempt(attemptKey);
     }
 
-    const normalize = (value?: string) => (value || '').trim().toLowerCase();
-    let isCorrect = false;
-
-    if (question.format === 'flashcard') {
-      isCorrect = Boolean(dto.correct);
-    } else {
-      isCorrect = normalize(dto.answer) === normalize(question.correctAnswer);
-    }
-
-    const questionProgress = session.questionProgress.find((progress) => progress.questionId === question.id);
-    if (!questionProgress) {
-      await this.ensureSessionQuestionProgress(session.id, [question.id]);
-    }
-
-    await this.prisma.studySessionQuestionProgress.update({
-      where: {
-        sessionId_questionId: {
-          sessionId: session.id,
-          questionId: question.id,
-        },
-      },
-      data: {
-        timesAnswered: (questionProgress?.timesAnswered ?? 0) + 1,
-        timesCorrect: (questionProgress?.timesCorrect ?? 0) + (isCorrect ? 1 : 0),
-        streak: isCorrect ? (questionProgress?.streak ?? 0) + 1 : 0,
-        lastReviewed: new Date(),
-      },
-    });
-
-    const nextIndex = Math.min(session.currentIndex + 1, session.questionQueue.length);
-
-    const updatedSession = await this.prisma.studySession.update({
+    const nextIndex = Math.min(
+      session.currentIndex + 1,
+      session.questionQueue.length,
+    );
+    await this.prisma.studySession.update({
       where: { id: session.id },
       data: { currentIndex: nextIndex },
-      include: {
-        questionProgress: true,
-        quiz: {
-          include: {
-            questions: { orderBy: { orderIndex: 'asc' } },
-          },
-        },
-      },
     });
 
-    return {
-      ...this.buildSessionPayload(updatedSession),
-      lastAnswer: {
-        questionId: question.id,
-        correct: isCorrect,
-        correctAnswer: question.correctAnswer,
-      },
-    };
+    return { success: true };
   }
 
   async shuffleRemainingQuestions(userId: string, sessionId: string) {
@@ -449,6 +616,7 @@ Guidelines:
       quizId: session.quizId,
       title: session.quiz.title,
       subject: session.quiz.subject,
+      questionQueue: session.questionQueue,
       currentIndex: session.currentIndex,
       totalQuestions,
       completedQuestions,
