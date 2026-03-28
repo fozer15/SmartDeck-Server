@@ -1,16 +1,21 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import type { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { FilesService } from '../files/files.service';
-import { GoogleGenAI } from '@google/genai';
-import { zodToJsonSchema } from 'zod-to-json-schema';
-import { quizResponseSchema } from './schemas/quiz.schema';
-import { GenerateQuizDto } from './dto/generate-quiz.dto';
-import { SubmitAnswerDto } from './dto/submit-answer.dto';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import type { Prisma } from "@prisma/client";
+import { PrismaService } from "../prisma/prisma.service";
+import { FilesService } from "../files/files.service";
+import { GoogleGenAI } from "@google/genai";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { quizResponseSchema } from "./schemas/quiz.schema";
+import { GenerateQuizDto } from "./dto/generate-quiz.dto";
+import { SubmitAnswerDto } from "./dto/submit-answer.dto";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{
   include: {
@@ -51,10 +56,10 @@ Guidelines:
   constructor(
     private prisma: PrismaService,
     private filesService: FilesService,
-    private config: ConfigService,
+    private config: ConfigService
   ) {
-    this.genAI = new GoogleGenAI({ apiKey: config.get('GEMINI_API_KEY') });
-    this.r2PublicUrl = config.get('R2_PUBLIC_URL')?.replace(/\/$/, '');
+    this.genAI = new GoogleGenAI({ apiKey: config.get("GEMINI_API_KEY") });
+    this.r2PublicUrl = config.get("R2_PUBLIC_URL")?.replace(/\/$/, "");
   }
 
   private toPublicUrl(value?: string | null) {
@@ -67,14 +72,16 @@ Guidelines:
     }
 
     const encodedKey = value
-      .split('/')
+      .split("/")
       .map((segment) => encodeURIComponent(segment))
-      .join('/');
+      .join("/");
 
     return this.r2PublicUrl ? `${this.r2PublicUrl}/${encodedKey}` : encodedKey;
   }
 
-  private withDeckFilePublicUrls<T extends { files?: Array<{ r2Key?: string | null }> }>(deck: T): T {
+  private withDeckFilePublicUrls<
+    T extends { files?: Array<{ r2Key?: string | null }> }
+  >(deck: T): T {
     if (!Array.isArray(deck.files)) {
       return deck;
     }
@@ -88,7 +95,10 @@ Guidelines:
     };
   }
 
-  private async ensureSessionQuestionProgress(sessionId: string, questionQueue: string[]) {
+  private async ensureSessionQuestionProgress(
+    sessionId: string,
+    questionQueue: string[]
+  ) {
     if (!questionQueue.length) {
       return;
     }
@@ -104,14 +114,22 @@ Guidelines:
 
   async generate(userId: string, dto: GenerateQuizDto) {
     // Upload all files to Gemini
-    const uploadedFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
+    const uploadedFiles: Array<{
+      name: string;
+      uri: string;
+      mimeType: string;
+    }> = [];
     const tempPaths: string[] = [];
 
     try {
       // Upload each file
       for (const fileId of dto.fileIds) {
-        const { buffer, mimeType, originalName } = await this.filesService.getFileBuffer(fileId);
-        const tempPath = path.join(os.tmpdir(), `${Date.now()}-${originalName}`);
+        const { buffer, mimeType, originalName } =
+          await this.filesService.getFileBuffer(fileId);
+        const tempPath = path.join(
+          os.tmpdir(),
+          `${Date.now()}-${originalName}`
+        );
         fs.writeFileSync(tempPath, buffer);
         tempPaths.push(tempPath);
 
@@ -130,25 +148,31 @@ Guidelines:
 
       // Generate quiz from all files
       const response = await this.genAI.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
+        model: "gemini-3.1-flash-lite-preview",
         contents: [
           {
             parts: [
-              ...uploadedFiles.map(f => ({ fileData: { mimeType: f.mimeType, fileUri: f.uri } })),
+              ...uploadedFiles.map((f) => ({
+                fileData: { mimeType: f.mimeType, fileUri: f.uri },
+              })),
               { text: prompt },
             ],
           },
         ],
         config: {
-          responseMimeType: 'application/json',
+          responseMimeType: "application/json",
           responseJsonSchema: zodToJsonSchema(quizResponseSchema as any),
         },
       });
 
       const quizData = quizResponseSchema.parse(JSON.parse(response.text));
       const generatedQuestionCount = quizData.quizzes.length;
-      const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
-      const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
+      const generatedTiers = Array.from(
+        new Set(quizData.quizzes.map((q) => q.tier))
+      );
+      const generatedFormats = Array.from(
+        new Set(quizData.quizzes.map((q) => q.format))
+      );
 
       // Create quiz with questions and file associations
       const createdDeck = await this.prisma.generatedQuiz.create({
@@ -158,16 +182,20 @@ Guidelines:
           title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
           subject: dto.subject || undefined,
           questionCount: dto.questionCount || generatedQuestionCount,
-          questionTier: dto.questionTier || (generatedTiers.length > 1 ? 'mixed' : generatedTiers[0]),
-          questionFormat: dto.questionFormat || (generatedFormats.length > 1 ? 'mixed' : generatedFormats[0]),
+          questionTier:
+            dto.questionTier ||
+            (generatedTiers.length > 1 ? "mixed" : generatedTiers[0]),
+          questionFormat:
+            dto.questionFormat ||
+            (generatedFormats.length > 1 ? "mixed" : generatedFormats[0]),
           files: {
-            connect: dto.fileIds.map(fileId => ({ id: fileId })),
+            connect: dto.fileIds.map((fileId) => ({ id: fileId })),
           },
           questions: {
             create: quizData.quizzes.map((q, index) => ({
               format: q.format,
               question: q.question,
-              options: q.format === 'multiple_choice' ? q.options : [],
+              options: q.format === "multiple_choice" ? q.options : [],
               correctAnswer: q.correctAnswer,
               explanation: q.explanation,
               tier: q.tier,
@@ -177,7 +205,6 @@ Guidelines:
           },
         },
         include: {
-          questions: { orderBy: { orderIndex: 'asc' } },
           files: { select: { id: true, originalName: true, r2Key: true } },
         },
       });
@@ -192,7 +219,9 @@ Guidelines:
       }
       // Cleanup uploaded files from Gemini
       for (const uploadedFile of uploadedFiles) {
-        await this.genAI.files.delete({ name: uploadedFile.name }).catch(() => {});
+        await this.genAI.files
+          .delete({ name: uploadedFile.name })
+          .catch(() => {});
       }
     }
   }
@@ -201,34 +230,42 @@ Guidelines:
     const lines = [this.systemPrompt];
 
     if (dto.questionCount || dto.questionTier || dto.questionFormat) {
-      lines.push('', 'Authoritative user preferences (must be followed):');
+      lines.push("", "Authoritative user preferences (must be followed):");
 
       if (dto.questionCount) {
         lines.push(`- Generate exactly ${dto.questionCount} questions.`);
       }
 
       if (dto.questionTier) {
-        if (dto.questionTier === 'mixed') {
-          lines.push('- Tier requirement: mixed (include recall, application, and analysis).');
+        if (dto.questionTier === "mixed") {
+          lines.push(
+            "- Tier requirement: mixed (include recall, application, and analysis)."
+          );
         } else {
-          lines.push(`- Tier requirement: all questions must use tier \"${dto.questionTier}\".`);
+          lines.push(
+            `- Tier requirement: all questions must use tier \"${dto.questionTier}\".`
+          );
         }
       }
 
       if (dto.questionFormat) {
-        if (dto.questionFormat === 'mixed') {
-          lines.push('- Format requirement: mixed (use multiple_choice, flashcard, and short_answer).');
+        if (dto.questionFormat === "mixed") {
+          lines.push(
+            "- Format requirement: mixed (use multiple_choice, flashcard, and short_answer)."
+          );
         } else {
-          lines.push(`- Format requirement: all questions must use format \"${dto.questionFormat}\".`);
+          lines.push(
+            `- Format requirement: all questions must use format \"${dto.questionFormat}\".`
+          );
         }
       }
     }
 
     if (dto.instructions?.trim()) {
-      lines.push('', `Additional instructions: ${dto.instructions.trim()}`);
+      lines.push("", `Additional instructions: ${dto.instructions.trim()}`);
     }
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   async findAllByUser(userId: string) {
@@ -238,11 +275,16 @@ Guidelines:
         files: { select: { id: true, originalName: true, r2Key: true } },
         sessions: {
           where: { userId },
-          select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
-          orderBy: { updatedAt: 'desc' },
+          select: {
+            id: true,
+            currentIndex: true,
+            questionQueue: true,
+            updatedAt: true,
+          },
+          orderBy: { updatedAt: "desc" },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
     return decks.map((deck) => {
@@ -264,7 +306,7 @@ Guidelines:
       where: { id },
       include: {
         files: { select: { id: true, originalName: true, r2Key: true } },
-        questions: { orderBy: { orderIndex: 'asc' } },
+        questions: { orderBy: { orderIndex: "asc" } },
       },
     });
 
@@ -277,20 +319,24 @@ Guidelines:
     });
 
     if (result.count === 0) {
-      throw new NotFoundException('Deck not found');
+      throw new NotFoundException("Deck not found");
     }
 
     return { success: true };
   }
 
-  async startOrResumeSession(userId: string, quizId: string, options?: { replay?: boolean }) {
+  async startOrResumeSession(
+    userId: string,
+    quizId: string,
+    options?: { replay?: boolean }
+  ) {
     const quiz = await this.prisma.generatedQuiz.findFirst({
       where: { id: quizId, userId },
-      include: { questions: { orderBy: { orderIndex: 'asc' } } },
+      include: { questions: { orderBy: { orderIndex: "asc" } } },
     });
 
     if (!quiz) {
-      throw new NotFoundException('Deck not found');
+      throw new NotFoundException("Deck not found");
     }
 
     const questionQueue = quiz.questions.map((q) => q.id);
@@ -329,12 +375,15 @@ Guidelines:
       });
       await this.ensureSessionQuestionProgress(session.id, questionQueue);
     } else {
-      await this.ensureSessionQuestionProgress(session.id, session.questionQueue);
+      await this.ensureSessionQuestionProgress(
+        session.id,
+        session.questionQueue
+      );
     }
 
     return this.getSessionByQuizId(userId, quizId);
   }
-  
+
   async getSessionByQuizId(userId: string, quizId: string) {
     const session = await this.prisma.studySession.findFirst({
       where: { userId, quizId },
@@ -349,7 +398,7 @@ Guidelines:
     });
 
     if (!session) {
-      throw new NotFoundException('Study session not found');
+      throw new NotFoundException("Study session not found");
     }
 
     const totalQuestions = session.questionQueue.length;
@@ -372,9 +421,15 @@ Guidelines:
     };
   }
 
-  async getQuestionBatch(userId: string, sessionId: string, offset = 0, limit?: number) {
+  async getQuestionBatch(
+    userId: string,
+    sessionId: string,
+    offset = 0,
+    limit?: number
+  ) {
     const safeOffset = Math.max(0, offset);
-    const requestedLimit = typeof limit === 'number' ? limit : this.defaultBatchSize;
+    const requestedLimit =
+      typeof limit === "number" ? limit : this.defaultBatchSize;
     const safeLimit = Math.max(1, Math.min(this.maxBatchSize, requestedLimit));
 
     const session = await this.prisma.studySession.findFirst({
@@ -383,25 +438,32 @@ Guidelines:
         questionProgress: true,
         quiz: {
           include: {
-            questions: { orderBy: { orderIndex: 'asc' } },
+            questions: { orderBy: { orderIndex: "asc" } },
           },
         },
       },
     });
 
     if (!session) {
-      throw new NotFoundException('Study session not found');
+      throw new NotFoundException("Study session not found");
     }
 
-    const questionIds = session.questionQueue.slice(safeOffset, safeOffset + safeLimit);
+    const questionIds = session.questionQueue.slice(
+      safeOffset,
+      safeOffset + safeLimit
+    );
     const batch = questionIds
       .map((questionId) => {
-        const question = session.quiz.questions.find((item) => item.id === questionId);
+        const question = session.quiz.questions.find(
+          (item) => item.id === questionId
+        );
         if (!question) {
           return null;
         }
 
-        const progress = session.questionProgress.find((item) => item.questionId === questionId);
+        const progress = session.questionProgress.find(
+          (item) => item.questionId === questionId
+        );
         return {
           ...question,
           timesAnswered: progress?.timesAnswered ?? 0,
@@ -423,23 +485,28 @@ Guidelines:
       correct?: boolean;
       attemptId?: string;
       clientTimestamp?: string;
-    },
+    }
   ) {
     if (!answerItem.questionId) {
       return;
     }
 
-    const question = session.quiz.questions.find((item) => item.id === answerItem.questionId);
+    const question = session.quiz.questions.find(
+      (item) => item.id === answerItem.questionId
+    );
     if (!question) {
       return;
     }
 
-    const normalize = (value?: string) => (value || '').trim().toLowerCase();
-    const isCorrect = question.format === 'flashcard'
-      ? Boolean(answerItem.correct)
-      : normalize(answerItem.answer) === normalize(question.correctAnswer);
+    const normalize = (value?: string) => (value || "").trim().toLowerCase();
+    const isCorrect =
+      question.format === "flashcard"
+        ? Boolean(answerItem.correct)
+        : normalize(answerItem.answer) === normalize(question.correctAnswer);
 
-    const progress = session.questionProgress.find((item) => item.questionId === question.id);
+    const progress = session.questionProgress.find(
+      (item) => item.questionId === question.id
+    );
     if (!progress) {
       await this.ensureSessionQuestionProgress(session.id, [question.id]);
     }
@@ -469,7 +536,11 @@ Guidelines:
     }
   }
 
-  private buildAttemptKey(userId: string, sessionId: string, attemptId?: string) {
+  private buildAttemptKey(
+    userId: string,
+    sessionId: string,
+    attemptId?: string
+  ) {
     if (!attemptId) {
       return null;
     }
@@ -494,18 +565,18 @@ Guidelines:
         questionProgress: true,
         quiz: {
           include: {
-            questions: { orderBy: { orderIndex: 'asc' } },
+            questions: { orderBy: { orderIndex: "asc" } },
           },
         },
       },
     });
 
     if (!session) {
-      throw new NotFoundException('Study session not found');
+      throw new NotFoundException("Study session not found");
     }
 
     if (!dto.questionId) {
-      throw new BadRequestException('questionId is required');
+      throw new BadRequestException("questionId is required");
     }
 
     const attemptKey = this.buildAttemptKey(userId, sessionId, dto.attemptId);
@@ -515,7 +586,7 @@ Guidelines:
 
     const currentQuestionId = session.questionQueue[session.currentIndex];
     if (currentQuestionId && dto.questionId !== currentQuestionId) {
-      throw new ForbiddenException('Answer does not match current card');
+      throw new ForbiddenException("Answer does not match current card");
     }
 
     await this.scoreAndPersistAnswer(session, dto);
@@ -525,7 +596,7 @@ Guidelines:
 
     const nextIndex = Math.min(
       session.currentIndex + 1,
-      session.questionQueue.length,
+      session.questionQueue.length
     );
     await this.prisma.studySession.update({
       where: { id: session.id },
@@ -542,14 +613,14 @@ Guidelines:
         questionProgress: true,
         quiz: {
           include: {
-            questions: { orderBy: { orderIndex: 'asc' } },
+            questions: { orderBy: { orderIndex: "asc" } },
           },
         },
       },
     });
 
     if (!session) {
-      throw new NotFoundException('Study session not found');
+      throw new NotFoundException("Study session not found");
     }
 
     const answered = session.questionQueue.slice(0, session.currentIndex);
@@ -557,7 +628,10 @@ Guidelines:
 
     for (let i = remaining.length - 1; i > 0; i -= 1) {
       const randomIndex = Math.floor(Math.random() * (i + 1));
-      [remaining[i], remaining[randomIndex]] = [remaining[randomIndex], remaining[i]];
+      [remaining[i], remaining[randomIndex]] = [
+        remaining[randomIndex],
+        remaining[i],
+      ];
     }
 
     const questionQueue = [...answered, ...remaining];
@@ -569,7 +643,7 @@ Guidelines:
         questionProgress: true,
         quiz: {
           include: {
-            questions: { orderBy: { orderIndex: 'asc' } },
+            questions: { orderBy: { orderIndex: "asc" } },
           },
         },
       },
@@ -585,12 +659,15 @@ Guidelines:
       ? Math.round((completedQuestions / totalQuestions) * 100)
       : 0;
 
-    const currentQuestionId = session.questionQueue[session.currentIndex] || null;
+    const currentQuestionId =
+      session.questionQueue[session.currentIndex] || null;
     const currentQuestion = currentQuestionId
       ? session.quiz.questions.find((q) => q.id === currentQuestionId) || null
       : null;
     const currentQuestionProgress = currentQuestionId
-      ? session.questionProgress.find((progress) => progress.questionId === currentQuestionId) || null
+      ? session.questionProgress.find(
+          (progress) => progress.questionId === currentQuestionId
+        ) || null
       : null;
 
     return {
