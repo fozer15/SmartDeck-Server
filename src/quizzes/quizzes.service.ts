@@ -1,8 +1,8 @@
 import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FilesService } from '../files/files.service';
+import { EnvService } from '../env/env.service';
 import { GoogleGenAI } from '@google/genai';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { quizResponseSchema } from './schemas/quiz.schema';
@@ -51,10 +51,10 @@ Guidelines:
   constructor(
     private prisma: PrismaService,
     private filesService: FilesService,
-    private config: ConfigService,
+    private env: EnvService,
   ) {
-    this.genAI = new GoogleGenAI({ apiKey: config.get('GEMINI_API_KEY') });
-    this.r2PublicUrl = config.get('R2_PUBLIC_URL')?.replace(/\/$/, '');
+    this.genAI = new GoogleGenAI({ apiKey: env.geminiApiKey });
+    this.r2PublicUrl = env.r2PublicUrl;
   }
 
   private toPublicUrl(value?: string | null) {

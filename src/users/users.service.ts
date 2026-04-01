@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { EnvService } from '../env/env.service';
 import { CreateUserDto } from './dto/create-user.dto';
 
 @Injectable()
@@ -9,9 +9,9 @@ export class UsersService {
 
   constructor(
     private prisma: PrismaService,
-    private config: ConfigService,
+    private env: EnvService,
   ) {
-    this.r2PublicUrl = this.config.get('R2_PUBLIC_URL')?.replace(/\/$/, '');
+    this.r2PublicUrl = env.r2PublicUrl;
   }
 
   async findOrCreate(dto: CreateUserDto) {

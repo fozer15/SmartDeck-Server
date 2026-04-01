@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { EnvService } from '../env/env.service';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
 
@@ -12,18 +12,18 @@ export class FilesService {
 
   constructor(
     private prisma: PrismaService,
-    private config: ConfigService,
+    private env: EnvService,
   ) {
     this.s3 = new S3Client({
       region: 'auto',
-      endpoint: `https://${config.get('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com`,
+      endpoint: `https://${env.r2AccountId}.r2.cloudflarestorage.com`,
       credentials: {
-        accessKeyId: config.get('R2_ACCESS_KEY_ID'),
-        secretAccessKey: config.get('R2_SECRET_ACCESS_KEY'),
+        accessKeyId: env.r2AccessKeyId,
+        secretAccessKey: env.r2SecretAccessKey,
       },
     });
-    this.bucketName = config.get('R2_BUCKET_NAME');
-    this.r2PublicUrl = config.get('R2_PUBLIC_URL')?.replace(/\/$/, '');
+    this.bucketName = env.r2BucketName;
+    this.r2PublicUrl = env.r2PublicUrl;
   }
 
   async upload(userId: string, file: Express.Multer.File) {

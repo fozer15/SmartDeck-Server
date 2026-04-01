@@ -1,22 +1,22 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import { UsersService } from '../users/users.service';
+import { EnvService } from '../env/env.service';
 
 @Injectable()
 export class AuthService {
   private firebaseApp: admin.app.App;
 
   constructor(
-    private config: ConfigService,
+    private env: EnvService,
     private usersService: UsersService,
   ) {
     // Initialize Firebase Admin SDK
     this.firebaseApp = admin.initializeApp({
       credential: admin.credential.cert({
-        projectId: config.get('FIREBASE_PROJECT_ID'),
-        clientEmail: config.get('FIREBASE_CLIENT_EMAIL'),
-        privateKey: config.get('FIREBASE_PRIVATE_KEY')?.replace(/\\n/g, '\n'),
+        projectId: env.firebaseProjectId,
+        clientEmail: env.firebaseClientEmail,
+        privateKey: env.firebasePrivateKey,
       }),
     });
   }
