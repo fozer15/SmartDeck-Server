@@ -55,6 +55,20 @@ export class QuizzesController {
     return this.quizzesService.findAllByUser(req.user.uid);
   }
 
+  @Get(':quizId/analytics')
+  getAnalytics(@Param('quizId') quizId: string, @Req() req: any) {
+    return this.quizzesService.getDeckAnalytics(req.user.uid, quizId);
+  }
+
+  @Post(':quizId/tutor-chat')
+  tutorChat(
+    @Param('quizId') quizId: string,
+    @Req() req: any,
+    @Body() body: { messages: { role: 'user' | 'assistant'; text: string }[] },
+  ) {
+    return this.quizzesService.tutorChat(req.user.uid, quizId, body.messages ?? []);
+  }
+
   @Get(':quizId')
   findOne(@Param('quizId') quizId: string) {
     return this.quizzesService.findOne(quizId);

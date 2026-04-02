@@ -615,4 +615,157 @@ Guidelines:
         : null,
     };
   }
+
+  async getDeckAnalytics(userId: string, quizId: string) {
+    const quiz = await this.prisma.generatedQuiz.findFirst({
+      where: { id: quizId, userId },
+      include: {
+        questions: { orderBy: { orderIndex: 'asc' } },
+        sessions: {
+          where: { userId },
+          include: {
+            questionProgress: true,
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!quiz) {
+      throw new NotFoundException('Deck not found');
+    }
+
+    const session = quiz.sessions[0] || null;
+    const progressMap = new Map(
+      (session?.questionProgress || []).map((p) => [p.questionId, p]),
+    );
+
+    // Per-question breakdown
+    const questions = quiz.questions.map((q) => {
+      const progress = progressMap.get(q.id);
+      return {
+        id: q.id,
+        question: q.question,
+        tier: q.tier,
+        format: q.format,
+        topic: q.topic,
+        timesAnswered: progress?.timesAnswered ?? 0,
+        timesCorrect: progress?.timesCorrect ?? 0,
+        streak: progress?.streak ?? 0,
+        lastReviewed: progress?.lastReviewed ?? null,
+      };
+    });
+
+    // Aggregate by tier
+    const tierStats = this.aggregateBy(questions, 'tier');
+    // Aggregate by format
+    const formatStats = this.aggregateBy(questions, 'format');
+    // Aggregate by topic
+    const topicStats = this.aggregateBy(
+      questions.filter((q) => q.topic),
+      'topic',
+    );
+
+    const totalAnswered = questions.reduce((s, q) => s + q.timesAnswered, 0);
+    const totalCorrect = questions.reduce((s, q) => s + q.timesCorrect, 0);
+
+    return {
+      deckTitle: quiz.title,
+      subject: quiz.subject,
+      rigorIndex: quiz.rigorIndex,
+      totalQuestions: questions.length,
+      totalAnswered,
+      totalCorrect,
+      overallAccuracy: totalAnswered > 0 ? Math.round((totalCorrect / totalAnswered) * 100) : 0,
+      sessionComplete: session ? session.currentIndex >= session.questionQueue.length : false,
+      tierStats,
+      formatStats,
+      topicStats,
+      questions,
+    };
+  }
+
+  private aggregateBy(
+    questions: { timesAnswered: number; timesCorrect: number; [key: string]: any }[],
+    key: string,
+  ) {
+    const groups: Record<string, { total: number; answered: number; correct: number }> = {};
+    for (const q of questions) {
+      const value = q[key] as string;
+      if (!groups[value]) {
+        groups[value] = { total: 0, answered: 0, correct: 0 };
+      }
+      groups[value].total += 1;
+      groups[value].answered += q.timesAnswered;
+      groups[value].correct += q.timesCorrect;
+    }
+    return Object.entries(groups).map(([name, stats]) => ({
+      name,
+      ...stats,
+      accuracy: stats.answered > 0 ? Math.round((stats.correct / stats.answered) * 100) : 0,
+    }));
+  }
+
+  async tutorChat(
+    userId: string,
+    quizId: string,
+    messages: { role: 'user' | 'assistant'; text: string }[],
+  ) {
+    const analytics = await this.getDeckAnalytics(userId, quizId);
+
+    const systemInstruction = `You are a friendly, encouraging AI study tutor. The student just reviewed their quiz analytics and you are here to help them understand their performance and guide them on what to focus on next.
+
+Here is the student's analytics data for the deck "${analytics.deckTitle}":
+- Subject: ${analytics.subject || 'General'}
+- Total Questions: ${analytics.totalQuestions}
+- Total Attempts: ${analytics.totalAnswered}
+- Overall Accuracy: ${analytics.overallAccuracy}%
+- Rigor Index: ${analytics.rigorIndex}
+- Session complete: ${analytics.sessionComplete}
+
+Tier breakdown:
+${analytics.tierStats.map((t) => `  ${t.name}: ${t.accuracy}% accuracy (${t.correct}/${t.answered} correct, ${t.total} questions)`).join('\n')}
+
+Format breakdown:
+${analytics.formatStats.map((f) => `  ${f.name}: ${f.accuracy}% accuracy (${f.correct}/${f.answered} correct)`).join('\n')}
+
+Topic breakdown:
+${analytics.topicStats.map((t) => `  ${t.name}: ${t.accuracy}% accuracy (${t.correct}/${t.answered} correct)`).join('\n')}
+
+Questions the student struggled with (accuracy < 60%):
+${analytics.questions.filter((q) => q.timesAnswered > 0 && (q.timesCorrect / q.timesAnswered) < 0.6).map((q) => `  - "${q.question}" (${q.tier}, ${Math.round((q.timesCorrect / q.timesAnswered) * 100)}% accuracy)`).join('\n') || '  None — great job!'}
+
+Guidelines:
+- Be warm, supportive, and use a conversational tone
+- Keep responses concise (2-4 short paragraphs max)
+- Use concrete examples from their data
+- If this is the first message, introduce yourself briefly, comment on their overall performance positively, then point out one strength and one area to improve with specific advice
+- Avoid overwhelming them with numbers — translate stats into plain language
+- If they ask questions, answer helpfully and relate back to their specific data
+- You can use emoji sparingly for friendliness`;
+
+    const contents = messages.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.text }],
+    }));
+
+    // If no user messages yet, add a trigger
+    if (contents.length === 0) {
+      contents.push({
+        role: 'user',
+        parts: [{ text: 'Hi! I just finished reviewing my quiz results. Can you help me understand how I did and what I should focus on?' }],
+      });
+    }
+
+    const response = await this.genAI.models.generateContent({
+      model: 'gemini-3.1-flash-lite-preview',
+      contents,
+      config: {
+        systemInstruction,
+      },
+    });
+
+    return { reply: response.text };
+  }
 }
