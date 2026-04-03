@@ -10,9 +10,14 @@ export class GenerateQuizDto {
   @IsEnum(Subject)
   subject?: Subject;
 
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  fileIds: string[];
+  fileIds?: string[];
+
+  @IsOptional()
+  @IsString()
+  audioFileId?: string;
 
   @IsOptional()
   @IsInt()

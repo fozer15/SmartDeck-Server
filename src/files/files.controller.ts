@@ -37,6 +37,25 @@ export class FilesController {
     return this.filesService.upload(req.user.uid, file);
   }
 
+  @Post('upload-audio')
+  @UseInterceptors(
+    FileInterceptor('audio', {
+      storage: memoryStorage(),
+      fileFilter: (req, file, cb) => {
+        const allowed = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/x-m4a', 'audio/mp4'];
+        if (!allowed.includes(file.mimetype)) {
+          return cb(new BadRequestException('Only audio files are allowed (MP3, WAV, OGG, WebM, M4A)'), false);
+        }
+        cb(null, true);
+      },
+      limits: { fileSize: 50 * 1024 * 1024 },
+    }),
+  )
+  uploadAudio(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
+    if (!file) throw new BadRequestException('No audio file uploaded');
+    return this.filesService.upload(req.user.uid, file);
+  }
+
   @Post('upload-avatar')
   @UseInterceptors(
     FileInterceptor('avatar', {

@@ -26,7 +26,7 @@ export class UsersService {
         where: { id: dto.id },
         data: {
           email: dto.email,
-          name: dto.name,
+          name: existingUser.name || dto.name,
           avatarUrl: existingUser.avatarUrl || dto.avatarUrl,
         },
       });

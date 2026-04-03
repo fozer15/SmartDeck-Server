@@ -103,6 +103,14 @@ Guidelines:
   }
 
   async generate(userId: string, dto: GenerateQuizDto) {
+    if (dto.audioFileId) {
+      return this.generateFromAudio(userId, dto);
+    }
+
+    if (!dto.fileIds || dto.fileIds.length === 0) {
+      throw new BadRequestException('Either fileIds or audioFileId is required');
+    }
+
     // Upload all files to Gemini
     const uploadedFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
     const tempPaths: string[] = [];
@@ -161,7 +169,7 @@ Guidelines:
           questionTier: dto.questionTier || (generatedTiers.length > 1 ? 'mixed' : generatedTiers[0]),
           questionFormat: dto.questionFormat || (generatedFormats.length > 1 ? 'mixed' : generatedFormats[0]),
           files: {
-            connect: dto.fileIds.map(fileId => ({ id: fileId })),
+            connect: (dto.fileIds || []).map(fileId => ({ id: fileId })),
           },
           questions: {
             create: quizData.quizzes.map((q, index) => ({
@@ -193,6 +201,99 @@ Guidelines:
       // Cleanup uploaded files from Gemini
       for (const uploadedFile of uploadedFiles) {
         await this.genAI.files.delete({ name: uploadedFile.name }).catch(() => {});
+      }
+    }
+  }
+
+  private async generateFromAudio(userId: string, dto: GenerateQuizDto) {
+    const { buffer, mimeType, originalName } = await this.filesService.getFileBuffer(dto.audioFileId);
+    const tempPath = path.join(os.tmpdir(), `${Date.now()}-${originalName}`);
+    let uploadedFileName: string | null = null;
+
+    try {
+      fs.writeFileSync(tempPath, buffer);
+
+      // Upload audio to Gemini File API
+      const uploadedFile = await this.genAI.files.upload({
+        file: tempPath,
+        config: { mimeType, displayName: originalName },
+      });
+      uploadedFileName = uploadedFile.name;
+
+      // Step 1: Transcribe the audio using Gemini
+      const transcriptionResponse = await this.genAI.models.generateContent({
+        model: 'gemini-3.1-flash-lite-preview',
+        contents: [
+          {
+            parts: [
+              { fileData: { mimeType, fileUri: uploadedFile.uri } },
+              { text: 'Transcribe this audio completely and accurately. Output only the transcript text, preserving the original language. Include speaker labels if multiple speakers are detected. Do not add any commentary or formatting beyond the transcript itself.' },
+            ],
+          },
+        ],
+      });
+
+      const transcript = transcriptionResponse.text?.trim();
+      if (!transcript) {
+        throw new BadRequestException('Could not transcribe the audio file. Please try a clearer recording.');
+      }
+
+      // Step 2: Generate quiz from transcript
+      const prompt = this.buildPrompt(dto);
+      const quizPrompt = `The following is a transcript from an audio recording. Use it as the source material to generate quiz questions.\n\n--- TRANSCRIPT START ---\n${transcript}\n--- TRANSCRIPT END ---\n\n${prompt}`;
+
+      const quizResponse = await this.genAI.models.generateContent({
+        model: 'gemini-3.1-flash-lite-preview',
+        contents: [{ parts: [{ text: quizPrompt }] }],
+        config: {
+          responseMimeType: 'application/json',
+          responseJsonSchema: zodToJsonSchema(quizResponseSchema as any),
+        },
+      });
+
+      const quizData = quizResponseSchema.parse(JSON.parse(quizResponse.text));
+      const generatedQuestionCount = quizData.quizzes.length;
+      const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
+      const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
+
+      const createdDeck = await this.prisma.generatedQuiz.create({
+        data: {
+          userId,
+          rigorIndex: quizData.rigorIndex,
+          title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
+          subject: dto.subject || undefined,
+          questionCount: dto.questionCount || generatedQuestionCount,
+          questionTier: dto.questionTier || (generatedTiers.length > 1 ? 'mixed' : generatedTiers[0]),
+          questionFormat: dto.questionFormat || (generatedFormats.length > 1 ? 'mixed' : generatedFormats[0]),
+          files: {
+            connect: [{ id: dto.audioFileId }],
+          },
+          questions: {
+            create: quizData.quizzes.map((q, index) => ({
+              format: q.format,
+              question: q.question,
+              options: q.format === 'multiple_choice' ? q.options : [],
+              correctAnswer: q.correctAnswer,
+              explanation: q.explanation,
+              tier: q.tier,
+              topic: q.topic,
+              orderIndex: index,
+            })),
+          },
+        },
+        include: {
+          questions: { orderBy: { orderIndex: 'asc' } },
+          files: { select: { id: true, originalName: true, r2Key: true } },
+        },
+      });
+
+      return this.withDeckFilePublicUrls(createdDeck);
+    } finally {
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+      if (uploadedFileName) {
+        await this.genAI.files.delete({ name: uploadedFileName }).catch(() => {});
       }
     }
   }
