@@ -60,6 +60,17 @@ export class UsersService {
     return this.withPublicAvatarUrl(user);
   }
 
+  async updateProfile(userId: string, data: { name?: string }) {
+    console.log('Updating profile for userId:', userId, 'with data:', data);
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(data.name !== undefined && { name: data.name }),
+      },
+    });
+    return this.withPublicAvatarUrl(user);
+  }
+
   private withPublicAvatarUrl<T extends { avatarUrl: string | null }>(user: T): T {
     return {
       ...user,

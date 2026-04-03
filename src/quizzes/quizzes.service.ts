@@ -231,21 +231,44 @@ Guidelines:
     return lines.join('\n');
   }
 
-  async findAllByUser(userId: string) {
-    const decks = await this.prisma.generatedQuiz.findMany({
-      where: { userId },
-      include: {
-        files: { select: { id: true, originalName: true, r2Key: true } },
-        sessions: {
-          where: { userId },
-          select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
-          orderBy: { updatedAt: 'desc' },
-        },
+  async findAllByUser(
+    userId: string,
+    options?: { page?: number; limit?: number; title?: string; subject?: string; paginate?: boolean },
+  ) {
+    const paginate = options?.paginate ?? false;
+    const page = options?.page ?? 1;
+    const limit = options?.limit ?? 6;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.GeneratedQuizWhereInput = { userId };
+
+    if (options?.title) {
+      where.title = { contains: options.title, mode: 'insensitive' };
+    }
+
+    if (options?.subject) {
+      where.subject = options.subject as any;
+    }
+
+    const includeClause = {
+      files: { select: { id: true, originalName: true, r2Key: true } },
+      sessions: {
+        where: { userId },
+        select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
+        orderBy: { updatedAt: 'desc' as const },
       },
+    };
+
+    const decks = await this.prisma.generatedQuiz.findMany({
+      where,
+      include: includeClause,
       orderBy: { createdAt: 'desc' },
+      ...(paginate ? { skip, take: limit } : {}),
     });
 
-    return decks.map((deck) => {
+    const total = paginate ? await this.prisma.generatedQuiz.count({ where }) : 0;
+
+    const data = decks.map((deck) => {
       const deckWithPublicUrls = this.withDeckFilePublicUrls(deck);
       return {
         ...deckWithPublicUrls,
@@ -257,6 +280,18 @@ Guidelines:
         })),
       };
     });
+
+    if (!paginate) {
+      return data;
+    }
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async findOne(id: string) {

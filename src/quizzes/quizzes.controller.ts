@@ -51,8 +51,23 @@ export class QuizzesController {
   }
 
   @Get()
-  findAll(@Req() req: any) {
-    return this.quizzesService.findAllByUser(req.user.uid);
+  findAll(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('title') title?: string,
+    @Query('subject') subject?: string,
+  ) {
+    const paginate = page !== undefined || limit !== undefined;
+    const parsedPage = Number(page) > 0 ? Number(page) : 1;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 6;
+    return this.quizzesService.findAllByUser(req.user.uid, {
+      page: parsedPage,
+      limit: parsedLimit,
+      title: title || undefined,
+      subject: subject || undefined,
+      paginate,
+    });
   }
 
   @Get(':quizId/analytics')

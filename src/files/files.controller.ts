@@ -4,6 +4,7 @@ import {
   Post,
   Delete,
   Param,
+  Query,
   Req,
   UploadedFile,
   UseInterceptors,
@@ -56,8 +57,21 @@ export class FilesController {
   }
 
   @Get()
-  findAll(@Req() req: any) {
-    return this.filesService.findAllByUser(req.user.uid);
+  findAll(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('name') name?: string,
+  ) {
+    const paginate = page !== undefined || limit !== undefined;
+    const parsedPage = Number(page) > 0 ? Number(page) : 1;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 6;
+    return this.filesService.findAllByUser(req.user.uid, {
+      page: parsedPage,
+      limit: parsedLimit,
+      name: name || undefined,
+      paginate,
+    });
   }
 
   @Get(':id')

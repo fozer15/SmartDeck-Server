@@ -79,13 +79,47 @@ export class FilesService {
     };
   }
 
-  async findAllByUser(userId: string) {
-    const files = await this.prisma.uploadedFile.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAllByUser(
+    userId: string,
+    options?: { page?: number; limit?: number; name?: string; paginate?: boolean },
+  ) {
+    const paginate = options?.paginate ?? false;
+    const page = options?.page ?? 1;
+    const limit = options?.limit ?? 6;
+    const skip = (page - 1) * limit;
 
-    return files.map((file) => this.withPublicUrl(file));
+    const where: any = { userId };
+
+    if (options?.name) {
+      where.originalName = { contains: options.name, mode: 'insensitive' };
+    }
+
+    const findArgs: any = {
+      where,
+      orderBy: { createdAt: 'desc' },
+    };
+
+    if (paginate) {
+      findArgs.skip = skip;
+      findArgs.take = limit;
+    }
+
+    const [files, total] = await Promise.all([
+      this.prisma.uploadedFile.findMany(findArgs),
+      paginate ? this.prisma.uploadedFile.count({ where }) : Promise.resolve(0),
+    ]);
+
+    if (!paginate) {
+      return files.map((file) => this.withPublicUrl(file));
+    }
+
+    return {
+      data: files.map((file) => this.withPublicUrl(file)),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async findOne(id: string, userId: string) {
