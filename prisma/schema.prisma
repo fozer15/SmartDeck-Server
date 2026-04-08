@@ -23,6 +23,7 @@ model User {
   files         UploadedFile[]
   quizzes       GeneratedQuiz[]
   sessions      StudySession[]  // Links to active study states
+  likes         DeckLike[]
 }
 
 model UploadedFile {
@@ -58,6 +59,7 @@ model GeneratedQuiz {
   files       UploadedFile[] 
   questions   QuizQuestion[]
   sessions    StudySession[]
+  likes       DeckLike[]
 }
 
 enum QuestionTier {
@@ -152,6 +154,19 @@ model StudySessionQuestionProgress {
   @@unique([sessionId, questionId])
   @@index([sessionId])
   @@index([questionId])
+}
+
+model DeckLike {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deckId    String
+  deck      GeneratedQuiz @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@unique([userId, deckId])
+  @@index([userId])
+  @@index([deckId])
 }
 
 enum Subject {
