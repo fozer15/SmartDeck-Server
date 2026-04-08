@@ -352,7 +352,7 @@ Guidelines:
     }
 
     const includeClause = {
-      files: { select: { id: true, originalName: true, r2Key: true } },
+      files: { select: { id: true, originalName: true, r2Key: true} },
       sessions: {
         where: { userId },
         select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
@@ -395,6 +395,73 @@ Guidelines:
     };
   }
 
+  async findAllPublic(
+    userId?: string,
+    options?: { page?: number; limit?: number; title?: string; subject?: string; paginate?: boolean },
+  ) {
+    const paginate = options?.paginate ?? false;
+    const page = options?.page ?? 1;
+    const limit = options?.limit ?? 6;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.GeneratedQuizWhereInput = { isPublic: true };
+
+    if (options?.title) {
+      where.title = { contains: options.title, mode: 'insensitive' };
+    }
+
+    if (options?.subject) {
+      where.subject = options.subject as any;
+    }
+
+    const includeClause = {
+      files: { select: { id: true, originalName: true, r2Key: true } },
+      user: { select: { id: true, name: true, avatarUrl: true } },
+      _count: { select: { likes: true } },
+      ...(userId
+        ? {
+            likes: {
+              where: { userId },
+              select: { id: true },
+              take: 1,
+            },
+          }
+        : {}),
+    };
+
+    const decks = await this.prisma.generatedQuiz.findMany({
+      where,
+      include: includeClause,
+      orderBy: { createdAt: 'desc' },
+      ...(paginate ? { skip, take: limit } : {}),
+    });
+
+    const total = paginate ? await this.prisma.generatedQuiz.count({ where }) : 0;
+
+    const data = decks.map((deck: any) => {
+      const deckWithPublicUrls = this.withDeckFilePublicUrls(deck);
+      return {
+        ...deckWithPublicUrls,
+        likeCount: deck._count?.likes ?? 0,
+        likedByMe: userId ? (deck.likes?.length ?? 0) > 0 : false,
+        _count: undefined,
+        likes: undefined,
+      };
+    });
+
+    if (!paginate) {
+      return data;
+    }
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
   async findOne(id: string) {
     const deck = await this.prisma.generatedQuiz.findUnique({
       where: { id },
@@ -405,6 +472,50 @@ Guidelines:
     });
 
     return deck ? this.withDeckFilePublicUrls(deck) : deck;
+  }
+
+  async togglePublic(userId: string, id: string) {
+    const deck = await this.prisma.generatedQuiz.findFirst({
+      where: { id, userId },
+    });
+
+    if (!deck) {
+      throw new NotFoundException('Deck not found');
+    }
+
+    const updated = await this.prisma.generatedQuiz.update({
+      where: { id },
+      data: { isPublic: !deck.isPublic },
+    });
+
+    return { id: updated.id, isPublic: updated.isPublic };
+  }
+
+   async handleLikeAction(userId: string, id: string) {
+    const deck = await this.prisma.generatedQuiz.findFirst({
+      where: { id, isPublic: true },
+    });
+
+    if (!deck) {
+      throw new NotFoundException('Deck not found');
+    }
+
+    const existingLike = await this.prisma.deckLike.findUnique({
+      where: { userId_deckId: { userId, deckId: id } },
+    });
+
+    if (existingLike) {
+      await this.prisma.deckLike.delete({
+        where: { id: existingLike.id },
+      });
+      return { liked: false };
+    }
+
+    await this.prisma.deckLike.create({
+      data: { userId, deckId: id },
+    });
+
+    return { liked: true };
   }
 
   async removeByUser(userId: string, quizId: string) {
@@ -418,6 +529,8 @@ Guidelines:
 
     return { success: true };
   }
+
+
 
   async startOrResumeSession(userId: string, quizId: string, options?: { replay?: boolean }) {
     const quiz = await this.prisma.generatedQuiz.findFirst({

@@ -70,6 +70,26 @@ export class QuizzesController {
     });
   }
 
+  @Get('public')
+  findAllPublic(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('title') title?: string,
+    @Query('subject') subject?: string,
+  ) {
+    const paginate = page !== undefined || limit !== undefined;
+    const parsedPage = Number(page) > 0 ? Number(page) : 1;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 6;
+    return this.quizzesService.findAllPublic(req.user.uid, {
+      page: parsedPage,
+      limit: parsedLimit,
+      title: title || undefined,
+      subject: subject || undefined,
+      paginate,
+    });
+  }
+
   @Get(':quizId/analytics')
   getAnalytics(@Param('quizId') quizId: string, @Req() req: any) {
     return this.quizzesService.getDeckAnalytics(req.user.uid, quizId);
@@ -92,5 +112,15 @@ export class QuizzesController {
   @Delete(':quizId')
   remove(@Param('quizId') quizId: string, @Req() req: any) {
     return this.quizzesService.removeByUser(req.user.uid, quizId);
+  }
+
+  @Post(':quizId/public')
+  handlePublic(@Param('quizId') quizId: string, @Req() req: any) {
+    return this.quizzesService.togglePublic(req.user.uid, quizId);
+  }
+
+  @Post(':quizId/like')
+  likeAction(@Param('quizId') quizId: string, @Req() req: any) {
+    return this.quizzesService.handleLikeAction(req.user.uid, quizId);
   }
 }

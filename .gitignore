@@ -1,6 +1,7 @@
 node_modules/
 uploads/
 .env
+.prettierignore
 *.log
 .DS_Store
 dist/
