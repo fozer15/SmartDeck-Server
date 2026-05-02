@@ -56,7 +56,7 @@ export class QuizzesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('title') title?: string,
-    @Query('subject') subject?: string,
+    @Query('subject') subject?: string | string[],
   ) {
     const paginate = page !== undefined || limit !== undefined;
     const parsedPage = Number(page) > 0 ? Number(page) : 1;
@@ -65,7 +65,7 @@ export class QuizzesController {
       page: parsedPage,
       limit: parsedLimit,
       title: title || undefined,
-      subject: subject || undefined,
+      subject: this.toSubjectFilters(subject),
       paginate,
     });
   }
@@ -76,7 +76,7 @@ export class QuizzesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('title') title?: string,
-    @Query('subject') subject?: string,
+    @Query('subject') subject?: string | string[],
   ) {
     const paginate = page !== undefined || limit !== undefined;
     const parsedPage = Number(page) > 0 ? Number(page) : 1;
@@ -85,9 +85,18 @@ export class QuizzesController {
       page: parsedPage,
       limit: parsedLimit,
       title: title || undefined,
-      subject: subject || undefined,
+      subject: this.toSubjectFilters(subject),
       paginate,
     });
+  }
+
+  private toSubjectFilters(subject?: string | string[]) {
+    if (!subject) {
+      return undefined;
+    }
+
+    const values = (Array.isArray(subject) ? subject : [subject]).filter(Boolean);
+    return values.length ? values : undefined;
   }
 
   @Get(':quizId/analytics')

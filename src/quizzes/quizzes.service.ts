@@ -75,16 +75,25 @@ Guidelines:
   }
 
   private withDeckFilePublicUrls<T extends { files?: Array<{ r2Key?: string | null }> }>(deck: T): T {
-    if (!Array.isArray(deck.files)) {
-      return deck;
-    }
+    const files = Array.isArray(deck.files)
+      ? deck.files.map((file) => ({
+          ...file,
+          publicUrl: this.toPublicUrl(file.r2Key),
+        }))
+      : deck.files;
+
+    const user =
+      deck && typeof deck === 'object' && 'user' in deck && deck.user && typeof deck.user === 'object'
+        ? {
+            ...(deck.user as Record<string, unknown>),
+            avatarUrl: this.toPublicUrl((deck.user as { avatarUrl?: string | null }).avatarUrl),
+          }
+        : undefined;
 
     return {
       ...deck,
-      files: deck.files.map((file) => ({
-        ...file,
-        publicUrl: this.toPublicUrl(file.r2Key),
-      })),
+      ...(files ? { files } : {}),
+      ...(user ? { user } : {}),
     };
   }
 
@@ -334,7 +343,7 @@ Guidelines:
 
   async findAllByUser(
     userId: string,
-    options?: { page?: number; limit?: number; title?: string; subject?: string; paginate?: boolean },
+    options?: { page?: number; limit?: number; title?: string; subject?: string[]; paginate?: boolean },
   ) {
     const paginate = options?.paginate ?? false;
     const page = options?.page ?? 1;
@@ -347,8 +356,8 @@ Guidelines:
       where.title = { contains: options.title, mode: 'insensitive' };
     }
 
-    if (options?.subject) {
-      where.subject = options.subject as any;
+    if (options?.subject?.length) {
+      where.subject = { in: options.subject as any };
     }
 
     const includeClause = {
@@ -397,7 +406,7 @@ Guidelines:
 
   async findAllPublic(
     userId?: string,
-    options?: { page?: number; limit?: number; title?: string; subject?: string; paginate?: boolean },
+    options?: { page?: number; limit?: number; title?: string; subject?: string[]; paginate?: boolean },
   ) {
     const paginate = options?.paginate ?? false;
     const page = options?.page ?? 1;
@@ -410,8 +419,8 @@ Guidelines:
       where.title = { contains: options.title, mode: 'insensitive' };
     }
 
-    if (options?.subject) {
-      where.subject = options.subject as any;
+    if (options?.subject?.length) {
+      where.subject = { in: options.subject as any };
     }
 
     const includeClause = {
