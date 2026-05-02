@@ -132,4 +132,9 @@ export class QuizzesController {
   likeAction(@Param('quizId') quizId: string, @Req() req: any) {
     return this.quizzesService.handleLikeAction(req.user.uid, quizId);
   }
+
+  @Post(':quizId/save')
+  saveDeck(@Param('quizId') quizId: string, @Req() req: any) {
+    return this.quizzesService.handleSave(req.user.uid, quizId);
+  }
 }

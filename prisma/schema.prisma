@@ -24,6 +24,7 @@ model User {
   quizzes       GeneratedQuiz[]
   sessions      StudySession[]  // Links to active study states
   likes         DeckLike[]
+  saves         DeckSave[] 
 }
 
 model UploadedFile {
@@ -60,6 +61,7 @@ model GeneratedQuiz {
   questions   QuizQuestion[]
   sessions    StudySession[]
   likes       DeckLike[]
+  saves       DeckSave[] 
 }
 
 enum QuestionTier {
@@ -163,6 +165,19 @@ model DeckLike {
   deckId    String
   deck      GeneratedQuiz @relation(fields: [deckId], references: [id], onDelete: Cascade)
   createdAt DateTime      @default(now())
+
+  @@unique([userId, deckId])
+  @@index([userId])
+  @@index([deckId])
+}
+
+model DeckSave {
+  id        String          @id @default(cuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deckId    String
+  deck      GeneratedQuiz   @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  createdAt DateTime        @default(now())
 
   @@unique([userId, deckId])
   @@index([userId])

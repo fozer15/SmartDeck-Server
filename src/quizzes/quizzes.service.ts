@@ -350,22 +350,34 @@ Guidelines:
     const limit = options?.limit ?? 6;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.GeneratedQuizWhereInput = { userId };
+    const baseWhere: Prisma.GeneratedQuizWhereInput = {
+      OR: [
+        { userId },
+        { saves: { some: { userId } } },
+      ],
+    };
 
     if (options?.title) {
-      where.title = { contains: options.title, mode: 'insensitive' };
+      baseWhere.title = { contains: options.title, mode: 'insensitive' };
     }
 
     if (options?.subject?.length) {
-      where.subject = { in: options.subject as any };
+      baseWhere.subject = { in: options.subject as any };
     }
 
+    const where = baseWhere;
+
     const includeClause = {
-      files: { select: { id: true, originalName: true, r2Key: true} },
+      files: { select: { id: true, originalName: true, r2Key: true } },
       sessions: {
         where: { userId },
         select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
         orderBy: { updatedAt: 'desc' as const },
+      },
+      saves: {
+        where: { userId },
+        select: { id: true, createdAt: true },
+        take: 1,
       },
     };
 
@@ -378,11 +390,17 @@ Guidelines:
 
     const total = paginate ? await this.prisma.generatedQuiz.count({ where }) : 0;
 
-    const data = decks.map((deck) => {
+    const data = decks.map((deck: any) => {
       const deckWithPublicUrls = this.withDeckFilePublicUrls(deck);
+      const isOwned = deck.userId === userId;
+      const isSaved = (deck.saves?.length ?? 0) > 0;
       return {
         ...deckWithPublicUrls,
-        sessions: deck.sessions.map((session) => ({
+        isOwned,
+        isSaved,
+        savedAt: isSaved ? deck.saves[0].createdAt : null,
+        saves: undefined,
+        sessions: deck.sessions.map((session: any) => ({
           id: session.id,
           currentIndex: session.currentIndex,
           updatedAt: session.updatedAt,
@@ -434,6 +452,11 @@ Guidelines:
               select: { id: true },
               take: 1,
             },
+            saves: {
+              where: { userId },
+              select: { id: true },
+              take: 1,
+            },
           }
         : {}),
     };
@@ -453,8 +476,10 @@ Guidelines:
         ...deckWithPublicUrls,
         likeCount: deck._count?.likes ?? 0,
         likedByMe: userId ? (deck.likes?.length ?? 0) > 0 : false,
+        savedByMe: userId ? (deck.saves?.length ?? 0) > 0 : false,
         _count: undefined,
         likes: undefined,
+        saves: undefined,
       };
     });
 
@@ -525,6 +550,28 @@ Guidelines:
     });
 
     return { liked: true };
+  }
+
+  async handleSave(userId: string, id: string) {
+    const deck = await this.prisma.generatedQuiz.findFirst({
+      where: { id, isPublic: true },
+      select: { id: true },
+    });
+    if (!deck) throw new NotFoundException('Deck not found');
+
+    const existing = await this.prisma.deckSave.findUnique({
+      where: { userId_deckId: { userId, deckId: id } },
+    });
+
+    if (existing) {
+      await this.prisma.deckSave.delete({ where: { id: existing.id } });
+      const saveCount = await this.prisma.deckSave.count({ where: { deckId: id } });
+      return { saved: false, saveCount };
+    }
+
+    await this.prisma.deckSave.create({ data: { userId, deckId: id } });
+    const saveCount = await this.prisma.deckSave.count({ where: { deckId: id } });
+    return { saved: true, saveCount };
   }
 
   async removeByUser(userId: string, quizId: string) {
