@@ -104,6 +104,11 @@ export class QuizzesController {
     return this.quizzesService.getDeckAnalytics(req.user.uid, quizId);
   }
 
+  @Get(':quizId/likes')
+  getDeckLikes(@Param('quizId') quizId: string, @Req() req: any) {
+    return this.quizzesService.getDeckLikesForOwner(req.user.uid, quizId);
+  }
+
   @Post(':quizId/tutor-chat')
   tutorChat(
     @Param('quizId') quizId: string,

@@ -111,6 +111,16 @@ Guidelines:
     });
   }
 
+  private buildDeckAccessWhere(userId: string, quizId: string): Prisma.GeneratedQuizWhereInput {
+    return {
+      id: quizId,
+      OR: [
+        { userId },
+        { saves: { some: { userId } } },
+      ],
+    };
+  }
+
   async generate(userId: string, dto: GenerateQuizDto) {
     if (dto.audioFileId) {
       return this.generateFromAudio(userId, dto);
@@ -369,6 +379,13 @@ Guidelines:
 
     const includeClause = {
       files: { select: { id: true, originalName: true, r2Key: true } },
+      user: { select: { id: true, name: true, avatarUrl: true } },
+      _count: { select: { likes: true } },
+      likes: {
+        where: { userId },
+        select: { id: true },
+        take: 1,
+      },
       sessions: {
         where: { userId },
         select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
@@ -388,6 +405,45 @@ Guidelines:
       ...(paginate ? { skip, take: limit } : {}),
     });
 
+    const ownerPublicDeckIds = decks
+      .filter((deck) => deck.userId === userId && deck.isPublic)
+      .map((deck) => deck.id);
+
+    const likePreviewByDeckId = new Map<string, Array<{ id: string; name: string | null; avatarUrl: string | null }>>();
+
+    if (ownerPublicDeckIds.length) {
+      const previewLikes = await this.prisma.deckLike.findMany({
+        where: {
+          deckId: { in: ownerPublicDeckIds },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          deckId: true,
+          user: {
+            select: {
+              id: true,
+              name: true,
+              avatarUrl: true,
+            },
+          },
+        },
+      });
+
+      for (const like of previewLikes) {
+        const existing = likePreviewByDeckId.get(like.deckId) ?? [];
+        if (existing.length >= 3) {
+          continue;
+        }
+
+        existing.push({
+          id: like.user.id,
+          name: like.user.name,
+          avatarUrl: this.toPublicUrl(like.user.avatarUrl),
+        });
+        likePreviewByDeckId.set(like.deckId, existing);
+      }
+    }
+
     const total = paginate ? await this.prisma.generatedQuiz.count({ where }) : 0;
 
     const data = decks.map((deck: any) => {
@@ -396,9 +452,15 @@ Guidelines:
       const isSaved = (deck.saves?.length ?? 0) > 0;
       return {
         ...deckWithPublicUrls,
+        files: isOwned ? deckWithPublicUrls.files : [],
         isOwned,
         isSaved,
+        likeCount: isOwned && deck.isPublic ? deck._count?.likes ?? 0 : 0,
+        likePreviewUsers: isOwned && deck.isPublic ? likePreviewByDeckId.get(deck.id) ?? [] : [],
+        likedByMe: (deck.likes?.length ?? 0) > 0,
         savedAt: isSaved ? deck.saves[0].createdAt : null,
+        _count: undefined,
+        likes: undefined,
         saves: undefined,
         sessions: deck.sessions.map((session: any) => ({
           id: session.id,
@@ -474,6 +536,7 @@ Guidelines:
       const deckWithPublicUrls = this.withDeckFilePublicUrls(deck);
       return {
         ...deckWithPublicUrls,
+        files: [],
         likeCount: deck._count?.likes ?? 0,
         likedByMe: userId ? (deck.likes?.length ?? 0) > 0 : false,
         savedByMe: userId ? (deck.saves?.length ?? 0) > 0 : false,
@@ -506,6 +569,47 @@ Guidelines:
     });
 
     return deck ? this.withDeckFilePublicUrls(deck) : deck;
+  }
+
+  async getDeckLikesForOwner(userId: string, id: string) {
+    const deck = await this.prisma.generatedQuiz.findFirst({
+      where: { id, userId, isPublic: true },
+      select: {
+        id: true,
+        title: true,
+        _count: { select: { likes: true } },
+        likes: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            createdAt: true,
+            user: {
+              select: {
+                id: true,
+                name: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!deck) {
+      throw new NotFoundException('Deck not found');
+    }
+
+    return {
+      deckId: deck.id,
+      title: deck.title,
+      likeCount: deck._count.likes,
+      likedUsers: deck.likes.map((like) => ({
+        id: like.user.id,
+        name: like.user.name,
+        avatarUrl: this.toPublicUrl(like.user.avatarUrl),
+        likedAt: like.createdAt,
+      })),
+    };
   }
 
   async togglePublic(userId: string, id: string) {
@@ -553,12 +657,6 @@ Guidelines:
   }
 
   async handleSave(userId: string, id: string) {
-    const deck = await this.prisma.generatedQuiz.findFirst({
-      where: { id, isPublic: true },
-      select: { id: true },
-    });
-    if (!deck) throw new NotFoundException('Deck not found');
-
     const existing = await this.prisma.deckSave.findUnique({
       where: { userId_deckId: { userId, deckId: id } },
     });
@@ -567,6 +665,15 @@ Guidelines:
       await this.prisma.deckSave.delete({ where: { id: existing.id } });
       const saveCount = await this.prisma.deckSave.count({ where: { deckId: id } });
       return { saved: false, saveCount };
+    }
+
+    const deck = await this.prisma.generatedQuiz.findFirst({
+      where: { id, isPublic: true },
+      select: { id: true, userId: true },
+    });
+    if (!deck) throw new NotFoundException('Deck not found');
+    if (deck.userId === userId) {
+      throw new BadRequestException('You cannot save your own deck');
     }
 
     await this.prisma.deckSave.create({ data: { userId, deckId: id } });
@@ -590,7 +697,7 @@ Guidelines:
 
   async startOrResumeSession(userId: string, quizId: string, options?: { replay?: boolean }) {
     const quiz = await this.prisma.generatedQuiz.findFirst({
-      where: { id: quizId, userId },
+      where: this.buildDeckAccessWhere(userId, quizId),
       include: { questions: { orderBy: { orderIndex: 'asc' } } },
     });
 
@@ -923,7 +1030,7 @@ Guidelines:
 
   async getDeckAnalytics(userId: string, quizId: string) {
     const quiz = await this.prisma.generatedQuiz.findFirst({
-      where: { id: quizId, userId },
+      where: this.buildDeckAccessWhere(userId, quizId),
       include: {
         questions: { orderBy: { orderIndex: 'asc' } },
         sessions: {
