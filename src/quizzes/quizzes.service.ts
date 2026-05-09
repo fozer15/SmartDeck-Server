@@ -11,6 +11,7 @@ import { SubmitAnswerDto } from './dto/submit-answer.dto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { PDFDocument } from 'pdf-lib';
 
 type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{
   include: {
@@ -162,6 +163,80 @@ Guidelines:
     return 'This answer is correct based on the source material.';
   }
 
+  private normalizePageSelections(fileIds: string[] | undefined, pageSelections: unknown) {
+    const normalized = new Map<string, number[]>();
+
+    if (!Array.isArray(fileIds) || !fileIds.length || !pageSelections || typeof pageSelections !== 'object') {
+      return normalized;
+    }
+
+    const selectionRecord = pageSelections as Record<string, unknown>;
+
+    for (const fileId of fileIds) {
+      const selectedPages = selectionRecord[fileId];
+
+      if (!Array.isArray(selectedPages)) {
+        continue;
+      }
+      
+      // Normalize to unique, sorted, positive integers, using a Set to ensure uniqueness and filtering out invalid values.
+      const pages = Array.from(
+        new Set(
+          selectedPages
+            .map((page) => Number(page))
+            .filter((page) => Number.isInteger(page) && page > 0),
+        ),
+      ).sort((left, right) => left - right);
+
+      if (pages.length) {
+        normalized.set(fileId, pages);
+      }
+    }
+
+    return normalized;
+  }
+
+  private async buildPdfBufferForGeneration(buffer: Buffer, selectedPages: number[]) {
+    if (!selectedPages.length) {
+      return buffer;
+    }
+
+    const sourceDocument = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const pageCount = sourceDocument.getPageCount();
+    const zeroBasedIndexes = selectedPages
+      .filter((page) => page <= pageCount)
+      .map((page) => page - 1);
+
+    if (!zeroBasedIndexes.length) {
+      throw new BadRequestException('Selected pages are outside the PDF page range');
+    }
+
+    const isFullDocumentSelection =
+      zeroBasedIndexes.length === pageCount && zeroBasedIndexes.every((pageIndex, index) => pageIndex === index);
+
+    if (isFullDocumentSelection) {
+      return buffer;
+    }
+
+    const outputDocument = await PDFDocument.create();
+    const copiedPages = await outputDocument.copyPages(sourceDocument, zeroBasedIndexes);
+
+    for (const page of copiedPages) {
+      outputDocument.addPage(page);
+    }
+
+    const outputBytes = await outputDocument.save();
+    return Buffer.from(outputBytes);
+  }
+
+  private buildGenerationDisplayName(originalName: string, selectedPages: number[]) {
+    if (!selectedPages.length) {
+      return originalName;
+    }
+
+    return `${originalName} (pages ${selectedPages.join(', ')})`;
+  }
+
   private normalizeGeneratedQuizData(payload: unknown) {
     if (!payload || typeof payload !== 'object') {
       return payload;
@@ -203,6 +278,8 @@ Guidelines:
       throw new BadRequestException('Either fileIds or audioFileId is required');
     }
 
+    const pageSelectionsByFileId = this.normalizePageSelections(dto.fileIds, dto.pageSelections);
+
     // Upload all files to Gemini
     const uploadedFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
     const tempPaths: string[] = [];
@@ -211,13 +288,18 @@ Guidelines:
       // Upload each file
       for (const fileId of dto.fileIds) {
         const { buffer, mimeType, originalName } = await this.filesService.getFileBuffer(fileId);
-        const tempPath = path.join(os.tmpdir(), `${Date.now()}-${originalName}`);
-        fs.writeFileSync(tempPath, buffer);
+        const selectedPages = pageSelectionsByFileId.get(fileId) ?? [];
+        const generationBuffer = mimeType === 'application/pdf'
+          ? await this.buildPdfBufferForGeneration(buffer, selectedPages)
+          : buffer;
+        const displayName = this.buildGenerationDisplayName(originalName, selectedPages);
+        const tempPath = path.join(os.tmpdir(), `${Date.now()}-${fileId}-${originalName}`);
+        fs.writeFileSync(tempPath, generationBuffer);
         tempPaths.push(tempPath);
 
         const uploadedFile = await this.genAI.files.upload({
           file: tempPath,
-          config: { mimeType, displayName: originalName },
+          config: { mimeType, displayName },
         });
         uploadedFiles.push({
           name: uploadedFile.name,
