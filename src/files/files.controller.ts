@@ -10,11 +10,14 @@ import {
   UseInterceptors,
   BadRequestException,
   UseGuards,
+  StreamableFile,
+  Res,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { FilesService } from './files.service';
 import { AuthGuard } from '../auth/auth.guard';
+import type { Response } from 'express';
 
 @Controller('files')
 @UseGuards(AuthGuard)
@@ -96,6 +99,14 @@ export class FilesController {
   @Get(':id')
   findOne(@Param('id') id: string, @Req() req: any) {
     return this.filesService.findOne(id, req.user.uid);
+  }
+
+  @Get(':id/content')
+  async getContent(@Param('id') id: string, @Req() req: any, @Res({ passthrough: true }) response: Response) {
+    const file = await this.filesService.getFileBufferForUser(id, req.user.uid);
+    response.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+    response.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.originalName)}"`);
+    return new StreamableFile(file.buffer);
   }
 
   @Delete(':id')

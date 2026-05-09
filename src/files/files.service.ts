@@ -176,6 +176,31 @@ export class FilesService {
     return { buffer: Buffer.concat(chunks), mimeType: file.mimeType, originalName: file.originalName };
   }
 
+  async getFileBufferForUser(
+    fileId: string,
+    userId: string,
+  ): Promise<{ buffer: Buffer; mimeType: string; originalName: string }> {
+    const file = await this.prisma.uploadedFile.findUnique({ where: { id: fileId } });
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    if (file.userId !== userId) {
+      throw new ForbiddenException('You cannot access this file');
+    }
+
+    const response = await this.s3.send(
+      new GetObjectCommand({ Bucket: this.bucketName, Key: file.r2Key }),
+    );
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of response.Body as Readable) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+
+    return { buffer: Buffer.concat(chunks), mimeType: file.mimeType, originalName: file.originalName };
+  }
+
   private withPublicUrl(file: {
     id: string;
     userId: string;
