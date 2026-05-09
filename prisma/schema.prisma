@@ -103,7 +103,7 @@ model QuizQuestion {
   question      String          // Acts as the prompt or "Front" of a flashcard
   options       String[]        // Leave empty if format is 'flashcard'
   correctAnswer String          // Acts as the "Back" of a flashcard
-  explanation   String?         // Optional for simple vocabulary cards
+  explanation   String
   
   topic         String?         
   orderIndex    Int             // The immutable original order from the PDF

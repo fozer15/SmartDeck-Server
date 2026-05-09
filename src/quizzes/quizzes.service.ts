@@ -121,6 +121,79 @@ Guidelines:
     };
   }
 
+  private buildFallbackExplanation(question: {
+    format?: string;
+    question?: string;
+    correctAnswer?: string;
+    explanation?: string | null;
+  }) {
+    const existingExplanation = String(question.explanation || '').trim();
+    if (existingExplanation) {
+      return existingExplanation;
+    }
+
+    const prompt = String(question.question || '').trim();
+    const answer = String(question.correctAnswer || '').trim();
+
+    if (question.format === 'flashcard') {
+      if (prompt && answer) {
+        return `This flashcard links "${prompt}" to "${answer}" as the key idea to remember.`;
+      }
+
+      if (answer) {
+        return `The key concept to remember is "${answer}".`;
+      }
+
+      return 'This flashcard reinforces the key concept from the source material.';
+    }
+
+    if (question.format === 'short_answer') {
+      if (answer) {
+        return `The expected answer is "${answer}" based on the source material.`;
+      }
+
+      return 'The expected answer follows directly from the source material.';
+    }
+
+    if (answer) {
+      return `The correct answer is "${answer}" because it best matches the source material.`;
+    }
+
+    return 'This answer is correct based on the source material.';
+  }
+
+  private normalizeGeneratedQuizData(payload: unknown) {
+    if (!payload || typeof payload !== 'object') {
+      return payload;
+    }
+
+    const candidate = payload as { quizzes?: unknown[] };
+    if (!Array.isArray(candidate.quizzes)) {
+      return payload;
+    }
+
+    return {
+      ...candidate,
+      quizzes: candidate.quizzes.map((question) => {
+        if (!question || typeof question !== 'object') {
+          return question;
+        }
+
+        return {
+          ...question,
+          explanation: this.buildFallbackExplanation(
+            question as {
+              format?: string;
+              question?: string;
+              correctAnswer?: string;
+              explanation?: string | null;
+            },
+          ),
+        };
+      }),
+    };
+  }
+
   async generate(userId: string, dto: GenerateQuizDto) {
     if (dto.audioFileId) {
       return this.generateFromAudio(userId, dto);
@@ -172,7 +245,7 @@ Guidelines:
         },
       });
 
-      const quizData = quizResponseSchema.parse(JSON.parse(response.text));
+      const quizData = quizResponseSchema.parse(this.normalizeGeneratedQuizData(JSON.parse(response.text)));
       const generatedQuestionCount = quizData.quizzes.length;
       const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
       const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
@@ -270,7 +343,7 @@ Guidelines:
         },
       });
 
-      const quizData = quizResponseSchema.parse(JSON.parse(quizResponse.text));
+      const quizData = quizResponseSchema.parse(this.normalizeGeneratedQuizData(JSON.parse(quizResponse.text)));
       const generatedQuestionCount = quizData.quizzes.length;
       const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
       const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));

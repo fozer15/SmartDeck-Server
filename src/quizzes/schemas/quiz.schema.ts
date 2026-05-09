@@ -7,7 +7,7 @@ const questionMetaSchema = z.object({
       "Bloom's Taxonomy tier: recall=basic memorization, application=using concepts in a scenario, analysis=connecting multiple concepts or evaluating tradeoffs",
     ),
   topic: z.string().describe('The main topic or concept this question covers'),
-  explanation: z.string().optional().describe('Brief explanation, teaching note, or rationale for the answer'),
+  explanation: z.string().trim().min(1).describe('Brief explanation, teaching note, or rationale for the answer'),
 });
 
 const multipleChoiceQuestionSchema = questionMetaSchema.extend({
