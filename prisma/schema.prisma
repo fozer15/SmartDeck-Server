@@ -53,6 +53,7 @@ model GeneratedQuiz {
   isPublic    Boolean         @default(false) 
   
   rigorIndex  Float
+  gradingContext String?
   
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
@@ -104,6 +105,7 @@ model QuizQuestion {
   options       String[]        // Leave empty if format is 'flashcard'
   correctAnswer String          // Acts as the "Back" of a flashcard
   explanation   String
+  gradingContext String?
   
   topic         String?         
   orderIndex    Int             // The immutable original order from the PDF

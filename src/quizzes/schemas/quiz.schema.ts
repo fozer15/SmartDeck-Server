@@ -8,6 +8,11 @@ const questionMetaSchema = z.object({
     ),
   topic: z.string().describe('The main topic or concept this question covers'),
   explanation: z.string().trim().min(1).describe('Brief explanation, teaching note, or rationale for the answer'),
+  gradingContext: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('Question-specific grading context: the key facts, acceptable paraphrases, and core reasoning needed to grade this question'),
 });
 
 const multipleChoiceQuestionSchema = questionMetaSchema.extend({
@@ -37,6 +42,11 @@ export const quizQuestionSchema = z.discriminatedUnion('format', [
 
 export const quizResponseSchema = z.object({
   quizzes: z.array(quizQuestionSchema).describe('Array of quiz questions'),
+  gradingContext: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('Deck-level grading context summarizing the core concepts, acceptable wording variations, and overall grading guidance for the deck'),
   rigorIndex: z
     .number()
     .min(0)

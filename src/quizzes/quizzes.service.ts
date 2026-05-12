@@ -5,6 +5,7 @@ import { FilesService } from '../files/files.service';
 import { EnvService } from '../env/env.service';
 import { GoogleGenAI } from '@google/genai';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { z } from 'zod';
 import { quizResponseSchema } from './schemas/quiz.schema';
 import { GenerateQuizDto } from './dto/generate-quiz.dto';
 import { SubmitAnswerDto } from './dto/submit-answer.dto';
@@ -24,6 +25,34 @@ type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{
   };
 }>;
 
+type QuizQuestionWithGradingContext = StudySessionWithQuiz['quiz']['questions'][number] & {
+  gradingContext?: string | null;
+  topic?: string | null;
+};
+
+type StudySessionWithQuizFiles = Prisma.StudySessionGetPayload<{
+  include: {
+    questionProgress: true;
+    quiz: {
+      include: {
+        questions: true;
+        files: true;
+      };
+    };
+  };
+}> & {
+  quiz: StudySessionWithQuiz['quiz'] & {
+    gradingContext?: string | null;
+    questions: QuizQuestionWithGradingContext[];
+  };
+};
+
+const shortAnswerEvaluationSchema = z.object({
+  score: z.number().min(0).max(100),
+  isCorrect: z.boolean(),
+  feedback: z.string().min(1).max(1200),
+});
+
 @Injectable()
 export class QuizzesService {
   private genAI: GoogleGenAI;
@@ -32,6 +61,7 @@ export class QuizzesService {
   private readonly processedAttemptTtlMs = 30 * 60 * 1000;
   private readonly defaultBatchSize = 5;
   private readonly maxBatchSize = 50;
+  private readonly shortAnswerPassingScore = 70;
 
   private readonly systemPrompt = `You are an expert educational content creator. Analyze the provided PDF and generate quiz questions categorized by Bloom's Taxonomy cognitive tiers:
 
@@ -47,7 +77,9 @@ Guidelines:
 - Use one of these JSON format values for each question: multiple_choice, flashcard, short_answer
 - For multiple_choice only: include exactly 4 options
 - For flashcard and short_answer: do not include options
-- Provide a clear explanation for each answer`;
+- Provide a clear explanation for each answer
+- Provide a deck-level gradingContext that summarizes the key concepts, acceptable paraphrases, and what matters most when grading answers for this deck
+- Provide a gradingContext for each question that captures the specific facts or reasoning needed to grade that question without re-reading the original source`;
 
   constructor(
     private prisma: PrismaService,
@@ -163,6 +195,57 @@ Guidelines:
     return 'This answer is correct based on the source material.';
   }
 
+  private buildFallbackQuestionGradingContext(question: {
+    format?: string;
+    question?: string;
+    correctAnswer?: string;
+    explanation?: string | null;
+    gradingContext?: string | null;
+    topic?: string | null;
+  }) {
+    const existingContext = String(question.gradingContext || '').trim();
+    if (existingContext) {
+      return existingContext;
+    }
+
+    const topic = String(question.topic || '').trim();
+    const prompt = String(question.question || '').trim();
+    const answer = String(question.correctAnswer || '').trim();
+    const explanation = this.buildFallbackExplanation(question);
+
+    return [
+      topic ? `Topic: ${topic}.` : null,
+      prompt ? `Question focus: ${prompt}` : null,
+      answer ? `Expected core answer: ${answer}.` : null,
+      explanation ? `Reference rationale: ${explanation}` : null,
+      'Accept equivalent phrasing and concise paraphrases when the same concept is expressed accurately.',
+    ].filter(Boolean).join(' ');
+  }
+
+  private buildFallbackDeckGradingContext(
+    questions: Array<{ topic?: string | null }> = [],
+    gradingContext?: string | null,
+  ) {
+    const existingContext = String(gradingContext || '').trim();
+    if (existingContext) {
+      return existingContext;
+    }
+
+    const topics = Array.from(
+      new Set(
+        questions
+          .map((question) => String(question.topic || '').trim())
+          .filter(Boolean),
+      ),
+    ).slice(0, 8);
+
+    const topicSummary = topics.length
+      ? `Key deck topics: ${topics.join(', ')}.`
+      : 'Use the question-specific grading context as the primary source of truth.';
+
+    return `${topicSummary} Grade for conceptual correctness rather than exact wording, accept sound paraphrases, and reject answers that contradict the underlying facts or reasoning.`;
+  }
+
   private normalizePageSelections(fileIds: string[] | undefined, pageSelections: unknown) {
     const normalized = new Map<string, number[]>();
 
@@ -242,30 +325,50 @@ Guidelines:
       return payload;
     }
 
-    const candidate = payload as { quizzes?: unknown[] };
+    const candidate = payload as { quizzes?: unknown[]; gradingContext?: unknown };
     if (!Array.isArray(candidate.quizzes)) {
       return payload;
     }
 
+    const normalizedQuestions = candidate.quizzes.map((question) => {
+      if (!question || typeof question !== 'object') {
+        return question;
+      }
+
+      const questionWithFallbacks = {
+        ...question,
+        explanation: this.buildFallbackExplanation(
+          question as {
+            format?: string;
+            question?: string;
+            correctAnswer?: string;
+            explanation?: string | null;
+          },
+        ),
+      };
+
+      return {
+        ...questionWithFallbacks,
+        gradingContext: this.buildFallbackQuestionGradingContext(
+          questionWithFallbacks as {
+            format?: string;
+            question?: string;
+            correctAnswer?: string;
+            explanation?: string | null;
+            gradingContext?: string | null;
+            topic?: string | null;
+          },
+        ),
+      };
+    });
+
     return {
       ...candidate,
-      quizzes: candidate.quizzes.map((question) => {
-        if (!question || typeof question !== 'object') {
-          return question;
-        }
-
-        return {
-          ...question,
-          explanation: this.buildFallbackExplanation(
-            question as {
-              format?: string;
-              question?: string;
-              correctAnswer?: string;
-              explanation?: string | null;
-            },
-          ),
-        };
-      }),
+      gradingContext: this.buildFallbackDeckGradingContext(
+        normalizedQuestions as Array<{ topic?: string | null }>,
+        typeof candidate.gradingContext === 'string' ? candidate.gradingContext : undefined,
+      ),
+      quizzes: normalizedQuestions,
     };
   }
 
@@ -337,6 +440,7 @@ Guidelines:
         data: {
           userId,
           rigorIndex: quizData.rigorIndex,
+          gradingContext: quizData.gradingContext,
           title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
           subject: dto.subject || undefined,
           questionCount: dto.questionCount || generatedQuestionCount,
@@ -352,6 +456,7 @@ Guidelines:
               options: q.format === 'multiple_choice' ? q.options : [],
               correctAnswer: q.correctAnswer,
               explanation: q.explanation,
+              gradingContext: q.gradingContext,
               tier: q.tier,
               topic: q.topic,
               orderIndex: index,
@@ -434,6 +539,7 @@ Guidelines:
         data: {
           userId,
           rigorIndex: quizData.rigorIndex,
+          gradingContext: quizData.gradingContext,
           title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
           subject: dto.subject || undefined,
           questionCount: dto.questionCount || generatedQuestionCount,
@@ -449,6 +555,7 @@ Guidelines:
               options: q.format === 'multiple_choice' ? q.options : [],
               correctAnswer: q.correctAnswer,
               explanation: q.explanation,
+              gradingContext: q.gradingContext,
               tier: q.tier,
               topic: q.topic,
               orderIndex: index,
@@ -991,6 +1098,7 @@ Guidelines:
       attemptId?: string;
       clientTimestamp?: string;
     },
+    isCorrectOverride?: boolean,
   ) {
     if (!answerItem.questionId) {
       return;
@@ -1000,11 +1108,14 @@ Guidelines:
     if (!question) {
       return;
     }
-
+    
+    // For flashcards, the client determines correctness, so we trust the client-provided value. For other formats, we determine correctness by comparing normalized strings.
     const normalize = (value?: string) => (value || '').trim().toLowerCase();
-    const isCorrect = question.format === 'flashcard'
-      ? Boolean(answerItem.correct)
-      : normalize(answerItem.answer) === normalize(question.correctAnswer);
+    const isCorrect = typeof isCorrectOverride === 'boolean'
+      ? isCorrectOverride
+      : question.format === 'flashcard'
+        ? Boolean(answerItem.correct)
+        : normalize(answerItem.answer) === normalize(question.correctAnswer);
 
     const progress = session.questionProgress.find((item) => item.questionId === question.id);
     if (!progress) {
@@ -1025,6 +1136,161 @@ Guidelines:
         lastReviewed: new Date(),
       },
     });
+
+    return { isCorrect };
+  }
+
+  private async evaluateShortAnswerWithStoredContext(
+    session: StudySessionWithQuizFiles,
+    question: { question: string; correctAnswer: string; explanation?: string | null; gradingContext?: string | null; topic?: string | null },
+    userAnswer: string,
+  ) {
+    const prompt = [
+      'You are grading a student short-answer response for a study deck.',
+      'Use the stored deck grading context and question grading context as the primary source-aware guidance.',
+      'Also use your own reasoning and subject knowledge when the student answer is conceptually correct, paraphrased, or more concise than the canonical answer.',
+      'Do not require exact wording.',
+      `A score of ${this.shortAnswerPassingScore} or above counts as correct.`,
+      'Be strict about factual contradictions, but tolerant of equivalent phrasing and partial wording when the core idea is correct.',
+      '',
+      `Deck grading context: ${this.buildFallbackDeckGradingContext([], session.quiz.gradingContext)}`,
+      `Question: ${question.question}`,
+      `Canonical answer: ${question.correctAnswer}`,
+      `Question grading context: ${this.buildFallbackQuestionGradingContext(question)}`,
+      `Reference explanation: ${this.buildFallbackExplanation(question)}`,
+      `Student answer: ${userAnswer}`,
+      '',
+      'Return JSON only with:',
+      '- score: number from 0 to 100',
+      '- isCorrect: boolean consistent with the score threshold',
+      '- feedback: concise explanation of why the answer is correct or incorrect',
+    ].join('\n');
+
+    const response = await this.genAI.models.generateContent({
+      model: 'gemini-3.1-flash-lite-preview',
+      contents: [{ parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: 'application/json',
+        responseJsonSchema: zodToJsonSchema(shortAnswerEvaluationSchema as any),
+      },
+    });
+
+    const parsed = shortAnswerEvaluationSchema.parse(JSON.parse(response.text));
+    const score = Math.max(0, Math.min(100, Math.round(parsed.score)));
+
+    return {
+      score,
+      threshold: this.shortAnswerPassingScore,
+      isCorrect: score >= this.shortAnswerPassingScore,
+      feedback: parsed.feedback.trim(),
+    };
+  }
+
+  private async evaluateShortAnswerWithSourceFiles(
+    session: StudySessionWithQuizFiles,
+    question: { question: string; correctAnswer: string; explanation?: string | null; gradingContext?: string | null; topic?: string | null },
+    userAnswer: string,
+  ) {
+    const tempPaths: string[] = [];
+    const uploadedFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
+
+    try {
+      for (const file of session.quiz.files) {
+        const { buffer, mimeType, originalName } = await this.filesService.getFileBuffer(file.id);
+        const tempPath = path.join(os.tmpdir(), `${Date.now()}-${file.id}-${originalName}`);
+        fs.writeFileSync(tempPath, buffer);
+        tempPaths.push(tempPath);
+
+        const uploadedFile = await this.genAI.files.upload({
+          file: tempPath,
+          config: { mimeType, displayName: originalName },
+        });
+
+        uploadedFiles.push({
+          name: uploadedFile.name,
+          uri: uploadedFile.uri,
+          mimeType,
+        });
+      }
+
+      const prompt = [
+        'You are grading a student short-answer response for a study deck.',
+        'Use the attached source files as primary context when they are relevant.',
+        'Also use your own reasoning and subject knowledge when the student answer is conceptually correct, paraphrased, or more concise than the canonical answer.',
+        'Do not require exact wording.',
+        `A score of ${this.shortAnswerPassingScore} or above counts as correct.`,
+        'Be strict about factual contradictions, but tolerant of equivalent phrasing and partial wording when the core idea is correct.',
+        '',
+        `Deck grading context: ${this.buildFallbackDeckGradingContext([], session.quiz.gradingContext)}`,
+        `Question: ${question.question}`,
+        `Canonical answer: ${question.correctAnswer}`,
+        `Question grading context: ${this.buildFallbackQuestionGradingContext(question)}`,
+        `Reference explanation: ${this.buildFallbackExplanation(question)}`,
+        `Student answer: ${userAnswer}`,
+        '',
+        'Return JSON only with:',
+        '- score: number from 0 to 100',
+        '- isCorrect: boolean consistent with the score threshold',
+        '- feedback: concise explanation of why the answer is correct or incorrect',
+      ].join('\n');
+
+      const response = await this.genAI.models.generateContent({
+        model: 'gemini-3.1-flash-lite-preview',
+        contents: [
+          {
+            parts: [
+              ...uploadedFiles.map((file) => ({
+                fileData: {
+                  mimeType: file.mimeType,
+                  fileUri: file.uri,
+                },
+              })),
+              { text: prompt },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseJsonSchema: zodToJsonSchema(shortAnswerEvaluationSchema as any),
+        },
+      });
+
+      const parsed = shortAnswerEvaluationSchema.parse(JSON.parse(response.text));
+      const score = Math.max(0, Math.min(100, Math.round(parsed.score)));
+
+      return {
+        score,
+        threshold: this.shortAnswerPassingScore,
+        isCorrect: score >= this.shortAnswerPassingScore,
+        feedback: parsed.feedback.trim(),
+      };
+    } finally {
+      for (const tempPath of tempPaths) {
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+      }
+
+      for (const file of uploadedFiles) {
+        await this.genAI.files.delete({ name: file.name }).catch(() => {});
+      }
+    }
+  }
+
+  private async evaluateShortAnswer(
+    session: StudySessionWithQuizFiles,
+    question: { question: string; correctAnswer: string; explanation?: string | null; gradingContext?: string | null; topic?: string | null },
+    userAnswer: string,
+  ) {
+    const hasStoredContext = Boolean(
+      String(session.quiz.gradingContext || '').trim() || String(question.gradingContext || '').trim(),
+    );
+
+    if (hasStoredContext) {
+      return this.evaluateShortAnswerWithStoredContext(session, question, userAnswer);
+    }
+
+    return this.evaluateShortAnswerWithSourceFiles(session, question, userAnswer);
   }
 
   private pruneProcessedAttempts() {
@@ -1062,10 +1328,11 @@ Guidelines:
         quiz: {
           include: {
             questions: { orderBy: { orderIndex: 'asc' } },
+            files: true,
           },
         },
       },
-    });
+    }) as StudySessionWithQuizFiles | null;
 
     if (!session) {
       throw new NotFoundException('Study session not found');
@@ -1085,7 +1352,29 @@ Guidelines:
       throw new ForbiddenException('Answer does not match current card');
     }
 
-    await this.scoreAndPersistAnswer(session, dto);
+    const currentQuestion = session.quiz.questions.find((item) => item.id === dto.questionId);
+    if (!currentQuestion) {
+      throw new NotFoundException('Question not found in this study session');
+    }
+
+    let shortAnswerEvaluation:
+      | { score: number; threshold: number; isCorrect: boolean; feedback: string }
+      | null = null;
+
+    if (currentQuestion.format === 'short_answer') {
+      const submittedAnswer = String(dto.answer || '').trim();
+      if (!submittedAnswer) {
+        throw new BadRequestException('answer is required for short answer questions');
+      }
+
+      shortAnswerEvaluation = await this.evaluateShortAnswer(session, currentQuestion, submittedAnswer);
+    }
+
+    const persistedResult = await this.scoreAndPersistAnswer(
+      session,
+      dto,
+      shortAnswerEvaluation?.isCorrect,
+    );
     if (attemptKey) {
       this.markProcessedAttempt(attemptKey);
     }
@@ -1099,7 +1388,13 @@ Guidelines:
       data: { currentIndex: nextIndex },
     });
 
-    return { success: true };
+    return {
+      success: true,
+      isCorrect: persistedResult.isCorrect,
+      feedback: shortAnswerEvaluation?.feedback,
+      score: shortAnswerEvaluation?.score,
+      threshold: shortAnswerEvaluation?.threshold,
+    };
   }
 
   async shuffleRemainingQuestions(userId: string, sessionId: string) {
