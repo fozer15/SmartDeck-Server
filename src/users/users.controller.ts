@@ -28,4 +28,16 @@ export class UsersController {
   updateProfile(@Req() req: any, @Body() body: { name?: string; preferredLanguage?: AppLanguage }) {
     return this.usersService.updateProfile(req.user.uid, body);
   }
+
+  @Get(':id/public-profile')
+  @UseGuards(AuthGuard)
+  getPublicProfile(@Param('id') id: string, @Req() req: any) {
+    return this.usersService.getPublicProfile(req.user.uid, id);
+  }
+
+  @Post(':id/follow')
+  @UseGuards(AuthGuard)
+  toggleFollow(@Param('id') id: string, @Req() req: any) {
+    return this.usersService.toggleFollow(req.user.uid, id);
+  }
 }

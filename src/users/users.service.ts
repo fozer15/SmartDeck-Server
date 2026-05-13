@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -72,6 +72,123 @@ export class UsersService {
       } as any,
     });
     return this.withPublicAvatarUrl(user);
+  }
+
+  async getPublicProfile(viewerId: string, profileUserId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: profileUserId },
+      select: {
+        id: true,
+        name: true,
+        avatarUrl: true,
+        createdAt: true,
+        _count: {
+          select: {
+            followers: true,
+            following: true,
+          },
+        },
+        followers: viewerId
+          ? {
+              where: { followerId: viewerId },
+              select: { id: true },
+              take: 1,
+            }
+          : false,
+        quizzes: {
+          where: { isPublic: true },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            title: true,
+            subject: true,
+            createdAt: true,
+            _count: {
+              select: {
+                likes: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const publicDecks = user.quizzes.map((deck) => ({
+      id: deck.id,
+      title: deck.title,
+      subject: deck.subject,
+      createdAt: deck.createdAt,
+      likeCount: deck._count.likes,
+    }));
+
+    const totalLikes = publicDecks.reduce((sum, deck) => sum + Number(deck.likeCount || 0), 0);
+
+    return {
+      id: user.id,
+      name: user.name,
+      avatarUrl: this.toPublicUrl(user.avatarUrl),
+      createdAt: user.createdAt,
+      isMe: viewerId === user.id,
+      isFollowing: Array.isArray(user.followers) ? user.followers.length > 0 : false,
+      followerCount: user._count.followers,
+      followingCount: user._count.following,
+      publicDeckCount: publicDecks.length,
+      totalLikes,
+      publicDecks,
+    };
+  }
+
+  async toggleFollow(viewerId: string, profileUserId: string) {
+    if (viewerId === profileUserId) {
+      throw new BadRequestException('You cannot follow yourself');
+    }
+
+    const targetUser = await this.prisma.user.findUnique({
+      where: { id: profileUserId },
+      select: { id: true },
+    });
+
+    if (!targetUser) {
+      throw new NotFoundException('User not found');
+    }
+
+    const existingFollow = await this.prisma.userFollow.findUnique({
+      where: {
+        followerId_followingId: {
+          followerId: viewerId,
+          followingId: profileUserId,
+        },
+      },
+    });
+
+    if (existingFollow) {
+      await this.prisma.userFollow.delete({
+        where: { id: existingFollow.id },
+      });
+
+      const followerCount = await this.prisma.userFollow.count({
+        where: { followingId: profileUserId },
+      });
+
+      return { isFollowing: false, followerCount };
+    }
+
+    await this.prisma.userFollow.create({
+      data: {
+        followerId: viewerId,
+        followingId: profileUserId,
+      },
+    });
+
+    const followerCount = await this.prisma.userFollow.count({
+      where: { followingId: profileUserId },
+    });
+
+    return { isFollowing: true, followerCount };
   }
 
   private withPublicAvatarUrl<T extends { avatarUrl: string | null }>(user: T): T {

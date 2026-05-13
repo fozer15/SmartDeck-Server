@@ -26,6 +26,8 @@ model User {
   sessions      StudySession[]  // Links to active study states
   likes         DeckLike[]
   saves         DeckSave[] 
+  following     UserFollow[]    @relation("UserFollowing")
+  followers     UserFollow[]    @relation("UserFollowers")
 }
 
 model UploadedFile {
@@ -194,6 +196,20 @@ model DeckSave {
   @@unique([userId, deckId])
   @@index([userId])
   @@index([deckId])
+}
+
+model UserFollow {
+  id           String   @id @default(cuid())
+  followerId   String
+  followingId  String
+  createdAt    DateTime @default(now())
+
+  follower     User     @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  following    User     @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
 }
 
 enum Subject {
