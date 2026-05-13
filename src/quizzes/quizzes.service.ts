@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FilesService } from '../files/files.service';
 import { EnvService } from '../env/env.service';
-import { GoogleGenAI } from '@google/genai';
+import { GeminiService } from '../env/gemini.service';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import { quizResponseSchema } from './schemas/quiz.schema';
@@ -64,7 +64,6 @@ const shortAnswerEvaluationSchema = z.object({
 
 @Injectable()
 export class QuizzesService {
-  private genAI: GoogleGenAI;
   private r2PublicUrl: string;
   private readonly processedAttempts = new Map<string, number>();
   private readonly processedAttemptTtlMs = 30 * 60 * 1000;
@@ -94,8 +93,8 @@ Guidelines:
     private prisma: PrismaService,
     private filesService: FilesService,
     private env: EnvService,
+    private gemini: GeminiService,
   ) {
-    this.genAI = new GoogleGenAI({ apiKey: env.geminiApiKey });
     this.r2PublicUrl = env.r2PublicUrl;
   }
 
@@ -419,7 +418,7 @@ Guidelines:
         fs.writeFileSync(tempPath, generationBuffer);
         tempPaths.push(tempPath);
 
-        const uploadedFile = await this.genAI.files.upload({
+        const uploadedFile = await this.gemini.uploadFile({
           file: tempPath,
           config: { mimeType, displayName },
         });
@@ -433,8 +432,7 @@ Guidelines:
       const prompt = this.buildPrompt(dto, generationLanguage);
 
       // Generate quiz from all files
-      const response = await this.genAI.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
+      const response = await this.gemini.generateContent({
         contents: [
           {
             parts: [
@@ -499,7 +497,7 @@ Guidelines:
       }
       // Cleanup uploaded files from Gemini
       for (const uploadedFile of uploadedFiles) {
-        await this.genAI.files.delete({ name: uploadedFile.name }).catch(() => {});
+        await this.gemini.deleteFile({ name: uploadedFile.name }).catch(() => {});
       }
     }
   }
@@ -514,15 +512,14 @@ Guidelines:
       fs.writeFileSync(tempPath, buffer);
 
       // Upload audio to Gemini File API
-      const uploadedFile = await this.genAI.files.upload({
+      const uploadedFile = await this.gemini.uploadFile({
         file: tempPath,
         config: { mimeType, displayName: originalName },
       });
       uploadedFileName = uploadedFile.name;
 
       // Step 1: Transcribe the audio using Gemini
-      const transcriptionResponse = await this.genAI.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
+      const transcriptionResponse = await this.gemini.generateContent({
         contents: [
           {
             parts: [
@@ -542,8 +539,7 @@ Guidelines:
       const prompt = this.buildPrompt(dto, generationLanguage);
       const quizPrompt = `The following is a transcript from an audio recording. Use it as the source material to generate quiz questions.\n\n--- TRANSCRIPT START ---\n${transcript}\n--- TRANSCRIPT END ---\n\n${prompt}`;
 
-      const quizResponse = await this.genAI.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
+      const quizResponse = await this.gemini.generateContent({
         contents: [{ parts: [{ text: quizPrompt }] }],
         config: {
           responseMimeType: 'application/json',
@@ -596,7 +592,7 @@ Guidelines:
         fs.unlinkSync(tempPath);
       }
       if (uploadedFileName) {
-        await this.genAI.files.delete({ name: uploadedFileName }).catch(() => {});
+        await this.gemini.deleteFile({ name: uploadedFileName }).catch(() => {});
       }
     }
   }
@@ -1194,8 +1190,7 @@ Guidelines:
       '- feedback: concise explanation of why the answer is correct or incorrect',
     ].join('\n');
 
-    const response = await this.genAI.models.generateContent({
-      model: 'gemini-3.1-flash-lite-preview',
+    const response = await this.gemini.generateContent({
       contents: [{ parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',
@@ -1229,7 +1224,7 @@ Guidelines:
         fs.writeFileSync(tempPath, buffer);
         tempPaths.push(tempPath);
 
-        const uploadedFile = await this.genAI.files.upload({
+        const uploadedFile = await this.gemini.uploadFile({
           file: tempPath,
           config: { mimeType, displayName: originalName },
         });
@@ -1262,8 +1257,7 @@ Guidelines:
         '- feedback: concise explanation of why the answer is correct or incorrect',
       ].join('\n');
 
-      const response = await this.genAI.models.generateContent({
-        model: 'gemini-3.1-flash-lite-preview',
+      const response = await this.gemini.generateContent({
         contents: [
           {
             parts: [
@@ -1300,7 +1294,7 @@ Guidelines:
       }
 
       for (const file of uploadedFiles) {
-        await this.genAI.files.delete({ name: file.name }).catch(() => {});
+        await this.gemini.deleteFile({ name: file.name }).catch(() => {});
       }
     }
   }
@@ -1650,8 +1644,7 @@ Guidelines:
       });
     }
 
-    const response = await this.genAI.models.generateContent({
-      model: 'gemini-3.1-flash-lite-preview',
+    const response = await this.gemini.generateContent({
       contents,
       config: {
         systemInstruction,
