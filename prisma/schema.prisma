@@ -12,6 +12,7 @@ model User {
   email         String          @unique 
   name          String?
   avatarUrl     String?
+  preferredLanguage AppLanguage @default(en)
   
   // Gamification & Habit Tracking
   globalStreak  Int             @default(0)
@@ -47,6 +48,7 @@ model GeneratedQuiz {
   // Deck Metadata & Marketplace Settings
   title       String          @default("Untitled Deck")
   subject     Subject
+  language    AppLanguage     @default(en)
   questionCount Int?
   questionTier  QuizTierPreference?
   questionFormat QuizFormatPreference?
@@ -69,6 +71,14 @@ enum QuestionTier {
   recall
   application
   analysis
+}
+
+enum AppLanguage {
+  en
+  zh
+  hi
+  es
+  fr
 }
 
 // Allows for a "Mixed Deck" experience

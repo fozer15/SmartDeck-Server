@@ -2,6 +2,7 @@ import { Controller, Get, Post, Patch, Param, Body, UseGuards, Req } from '@nest
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { AuthGuard } from '../auth/auth.guard';
+import { AppLanguage } from '@prisma/client';
 
 @Controller('users')
 export class UsersController {
@@ -24,7 +25,7 @@ export class UsersController {
 
   @Patch('me/profile')
   @UseGuards(AuthGuard)
-  updateProfile(@Req() req: any, @Body() body: { name?: string }) {
+  updateProfile(@Req() req: any, @Body() body: { name?: string; preferredLanguage?: AppLanguage }) {
     return this.usersService.updateProfile(req.user.uid, body);
   }
 }

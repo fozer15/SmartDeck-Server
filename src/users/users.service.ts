@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
 import { CreateUserDto } from './dto/create-user.dto';
+import {AppLanguage} from '@prisma/client';
 
 @Injectable()
 export class UsersService {
@@ -28,7 +29,8 @@ export class UsersService {
           email: dto.email,
           name: existingUser.name || dto.name,
           avatarUrl: existingUser.avatarUrl || dto.avatarUrl,
-        },
+          preferredLanguage: (existingUser as { preferredLanguage?: AppLanguage }).preferredLanguage || dto.preferredLanguage || 'en',
+        } as any,
       });
 
       return this.withPublicAvatarUrl(updatedUser);
@@ -41,7 +43,8 @@ export class UsersService {
         email: dto.email,
         name: dto.name,
         avatarUrl: dto.avatarUrl,
-      },
+        preferredLanguage: dto.preferredLanguage || 'en',
+      } as any,
     });
 
     return this.withPublicAvatarUrl(createdUser);
@@ -60,13 +63,13 @@ export class UsersService {
     return this.withPublicAvatarUrl(user);
   }
 
-  async updateProfile(userId: string, data: { name?: string }) {
-    console.log('Updating profile for userId:', userId, 'with data:', data);
+  async updateProfile(userId: string, data: { name?: string; preferredLanguage?: AppLanguage }) {
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
         ...(data.name !== undefined && { name: data.name }),
-      },
+        ...(data.preferredLanguage !== undefined && { preferredLanguage: data.preferredLanguage }),
+      } as any,
     });
     return this.withPublicAvatarUrl(user);
   }

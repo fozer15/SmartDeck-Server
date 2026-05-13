@@ -13,6 +13,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { PDFDocument } from 'pdf-lib';
+import {AppLanguage} from '@prisma/client'
+
+const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
+  en: 'English',
+  zh: 'Chinese',
+  hi: 'Hindi',
+  es: 'Spanish',
+  fr: 'French',
+};
 
 type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{
   include: {
@@ -320,6 +329,15 @@ Guidelines:
     return `${originalName} (pages ${selectedPages.join(', ')})`;
   }
 
+  private async getUserPreferredLanguage(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { preferredLanguage: true } as any,
+    }) as { preferredLanguage?: AppLanguage } | null;
+
+    return user?.preferredLanguage ?? 'en';
+  }
+
   private normalizeGeneratedQuizData(payload: unknown) {
     if (!payload || typeof payload !== 'object') {
       return payload;
@@ -382,6 +400,7 @@ Guidelines:
     }
 
     const pageSelectionsByFileId = this.normalizePageSelections(dto.fileIds, dto.pageSelections);
+    const generationLanguage = await this.getUserPreferredLanguage(userId);
 
     // Upload all files to Gemini
     const uploadedFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
@@ -411,7 +430,7 @@ Guidelines:
         });
       }
 
-      const prompt = this.buildPrompt(dto);
+      const prompt = this.buildPrompt(dto, generationLanguage);
 
       // Generate quiz from all files
       const response = await this.genAI.models.generateContent({
@@ -443,6 +462,7 @@ Guidelines:
           gradingContext: quizData.gradingContext,
           title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
           subject: dto.subject || undefined,
+          language: generationLanguage,
           questionCount: dto.questionCount || generatedQuestionCount,
           questionTier: dto.questionTier || (generatedTiers.length > 1 ? 'mixed' : generatedTiers[0]),
           questionFormat: dto.questionFormat || (generatedFormats.length > 1 ? 'mixed' : generatedFormats[0]),
@@ -486,6 +506,7 @@ Guidelines:
 
   private async generateFromAudio(userId: string, dto: GenerateQuizDto) {
     const { buffer, mimeType, originalName } = await this.filesService.getFileBuffer(dto.audioFileId);
+    const generationLanguage = await this.getUserPreferredLanguage(userId);
     const tempPath = path.join(os.tmpdir(), `${Date.now()}-${originalName}`);
     let uploadedFileName: string | null = null;
 
@@ -518,7 +539,7 @@ Guidelines:
       }
 
       // Step 2: Generate quiz from transcript
-      const prompt = this.buildPrompt(dto);
+      const prompt = this.buildPrompt(dto, generationLanguage);
       const quizPrompt = `The following is a transcript from an audio recording. Use it as the source material to generate quiz questions.\n\n--- TRANSCRIPT START ---\n${transcript}\n--- TRANSCRIPT END ---\n\n${prompt}`;
 
       const quizResponse = await this.genAI.models.generateContent({
@@ -542,6 +563,7 @@ Guidelines:
           gradingContext: quizData.gradingContext,
           title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
           subject: dto.subject || undefined,
+          language: generationLanguage,
           questionCount: dto.questionCount || generatedQuestionCount,
           questionTier: dto.questionTier || (generatedTiers.length > 1 ? 'mixed' : generatedTiers[0]),
           questionFormat: dto.questionFormat || (generatedFormats.length > 1 ? 'mixed' : generatedFormats[0]),
@@ -579,8 +601,14 @@ Guidelines:
     }
   }
 
-  private buildPrompt(dto: GenerateQuizDto) {
+  private buildPrompt(dto: GenerateQuizDto, language: AppLanguage = 'en') {
     const lines = [this.systemPrompt];
+
+    lines.push(
+      '',
+      `Language requirement: write the generated deck title, grading context, questions, answer options, correct answers, and explanations entirely in ${APP_LANGUAGE_LABELS[language]}.`,
+      'Do not translate any previously created quiz content. This requirement only applies to the new quiz being generated now.',
+    );
 
     if (dto.questionCount || dto.questionTier || dto.questionFormat) {
       lines.push('', 'Authoritative user preferences (must be followed):');
@@ -1356,7 +1384,7 @@ Guidelines:
     if (!currentQuestion) {
       throw new NotFoundException('Question not found in this study session');
     }
-
+    
     let shortAnswerEvaluation:
       | { score: number; threshold: number; isCorrect: boolean; feedback: string }
       | null = null;
@@ -1369,6 +1397,8 @@ Guidelines:
 
       shortAnswerEvaluation = await this.evaluateShortAnswer(session, currentQuestion, submittedAnswer);
     }
+
+    //if shortAnswerevaluation is not null, it contains the isCorrect value determined by the LLM. For other question formats,
 
     const persistedResult = await this.scoreAndPersistAnswer(
       session,

@@ -1,4 +1,5 @@
-import { IsEmail, IsOptional, IsString } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString } from 'class-validator';
+import { AppLanguage } from '@prisma/client';
 
 export class CreateUserDto {
   @IsString()
@@ -15,4 +16,8 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   avatarUrl?: string;
+
+  @IsOptional()
+  @IsEnum(AppLanguage)
+  preferredLanguage?: AppLanguage;
 }
