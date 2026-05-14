@@ -59,6 +59,25 @@ export class FilesController {
     return this.filesService.upload(req.user.uid, file);
   }
 
+  @Post('upload-image')
+  @UseInterceptors(
+    FileInterceptor('image', {
+      storage: memoryStorage(),
+      fileFilter: (req, file, cb) => {
+        const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+        if (!allowed.includes(file.mimetype)) {
+          return cb(new BadRequestException('Only image files are allowed (PNG, JPEG, WEBP)'), false);
+        }
+        cb(null, true);
+      },
+      limits: { fileSize: 20 * 1024 * 1024 },
+    }),
+  )
+  uploadImage(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
+    if (!file) throw new BadRequestException('No image file uploaded');
+    return this.filesService.upload(req.user.uid, file);
+  }
+
   @Post('upload-avatar')
   @UseInterceptors(
     FileInterceptor('avatar', {

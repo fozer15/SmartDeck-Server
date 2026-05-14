@@ -71,7 +71,7 @@ export class QuizzesService {
   private readonly maxBatchSize = 50;
   private readonly shortAnswerPassingScore = 70;
 
-  private readonly systemPrompt = `You are an expert educational content creator. Analyze the provided PDF and generate quiz questions categorized by Bloom's Taxonomy cognitive tiers:
+  private readonly systemPrompt = `You are an expert educational content creator. Analyze the provided study source material and generate quiz questions categorized by Bloom's Taxonomy cognitive tiers:
 
 - Tier 1 "recall": Basic memorization (e.g. "What year was X founded?", "What is the formula for Y?")
 - Tier 2 "application": Using a concept in a straightforward scenario (e.g. "Calculate the velocity using the formula")
@@ -82,6 +82,8 @@ Also compute a Rigor Index (0-100): a weighted score where recall questions cont
 Guidelines:
 - Structured user preferences are authoritative. If question count, tier preference, or format preference is provided, follow it exactly.
 - If no user preference is provided, default to 8 questions with a balanced mix of tiers and formats.
+- If the source includes images or scanned pages, extract the clearly visible text faithfully and base questions only on information that is actually present or directly inferable from the source.
+- Do not invent missing, unreadable, or obscured text from an image.
 - Use one of these JSON format values for each question: multiple_choice, flashcard, short_answer
 - For multiple_choice only: include exactly 4 options
 - For flashcard and short_answer: do not include options
