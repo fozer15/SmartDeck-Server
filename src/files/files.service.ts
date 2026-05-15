@@ -9,8 +9,8 @@ import { Readable } from 'stream';
 export class FilesService {
   private s3: S3Client;
   private bucketName: string;
-  private r2PublicUrl: string;
   private readonly signedViewUrlTtlSeconds = 300;
+  private readonly appBaseUrl: string;
 
   constructor(
     private prisma: PrismaService,
@@ -25,7 +25,7 @@ export class FilesService {
       },
     });
     this.bucketName = env.r2BucketName;
-    this.r2PublicUrl = env.r2PublicUrl;
+    this.appBaseUrl = env.appBaseUrl;
   }
 
   async upload(userId: string, file: Express.Multer.File) {
@@ -73,11 +73,27 @@ export class FilesService {
     });
 
     return {
-      avatarUrl: this.toPublicUrl(user.avatarUrl),
+      avatarUrl: this.toAvatarEndpointUrl(user.id, user.avatarUrl),
       user: {
         ...user,
-        avatarUrl: this.toPublicUrl(user.avatarUrl),
+        avatarUrl: this.toAvatarEndpointUrl(user.id, user.avatarUrl),
       },
+    };
+  }
+
+  async getObjectBuffer(objectKey: string): Promise<{ buffer: Buffer; mimeType: string }> {
+    const response = await this.s3.send(
+      new GetObjectCommand({ Bucket: this.bucketName, Key: objectKey }),
+    );
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of response.Body as Readable) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+
+    return {
+      buffer: Buffer.concat(chunks),
+      mimeType: response.ContentType || 'application/octet-stream',
     };
   }
 
@@ -234,21 +250,12 @@ export class FilesService {
     return `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`;
   }
 
-  private toPublicUrl(value?: string | null) {
+  private toAvatarEndpointUrl(userId: string, value?: string | null) {
     if (!value) {
       return null;
     }
 
-    if (/^https?:\/\//i.test(value)) {
-      return value;
-    }
-
-    const encodedKey = value
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
-
-    return this.r2PublicUrl ? `${this.r2PublicUrl}/${encodedKey}` : encodedKey;
+    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar`;
   }
 
   private toStorageSafeFileName(fileName: string) {

@@ -1,12 +1,18 @@
-import { Controller, Get, Post, Patch, Param, Body, UseGuards, Req } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, Res, StreamableFile, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLanguage } from '@prisma/client';
+import { AuthService } from '../auth/auth.service';
+import type { Response } from 'express';
+import { AUTH_TOKEN_COOKIE } from '../auth/auth.constants';
 
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly authService: AuthService,
+  ) {}
 
   @Post()
   findOrCreate(@Body() dto: CreateUserDto) {
@@ -21,6 +27,19 @@ export class UsersController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.usersService.findOne(id);
+  }
+
+  @Get(':id/avatar')
+  async getAvatar(@Param('id') id: string, @Req() req: any, @Res({ passthrough: true }) response: Response) {
+    const token = this.getAuthCookie(req.headers?.cookie);
+    if (!token) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    await this.authService.verifyToken(token);
+    const avatar = await this.usersService.getAvatarContent(id);
+    response.setHeader('Content-Type', avatar.mimeType || 'application/octet-stream');
+    response.setHeader('Cache-Control', 'private, max-age=300');
+    return new StreamableFile(avatar.buffer);
   }
 
   @Patch('me/profile')
@@ -39,5 +58,22 @@ export class UsersController {
   @UseGuards(AuthGuard)
   toggleFollow(@Param('id') id: string, @Req() req: any) {
     return this.usersService.toggleFollow(req.user.uid, id);
+  }
+
+  private getAuthCookie(cookieHeader?: string) {
+    if (!cookieHeader) {
+      return null;
+    }
+
+    const cookies = cookieHeader.split(';');
+
+    for (const cookie of cookies) {
+      const trimmed = cookie.trim();
+      if (trimmed.startsWith(`${AUTH_TOKEN_COOKIE}=`)) {
+        return decodeURIComponent(trimmed.slice(AUTH_TOKEN_COOKIE.length + 1));
+      }
+    }
+
+    return null;
   }
 }

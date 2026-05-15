@@ -15,6 +15,7 @@ export class EnvService {
   readonly r2SecretAccessKey: string;
   readonly r2BucketName: string;
   readonly r2PublicUrl: string;
+  readonly appBaseUrl: string;
 
   constructor(config: ConfigService) {
     this.firebaseProjectId = config.getOrThrow('FIREBASE_PROJECT_ID');
@@ -27,5 +28,6 @@ export class EnvService {
     this.r2SecretAccessKey = config.getOrThrow('R2_SECRET_ACCESS_KEY');
     this.r2BucketName = config.getOrThrow('R2_BUCKET_NAME');
     this.r2PublicUrl = config.getOrThrow<string>('R2_PUBLIC_URL').replace(/\/$/, '');
+    this.appBaseUrl = (config.get<string>('APP_BASE_URL') || 'http://localhost:3000').replace(/\/$/, '');
   }
 }

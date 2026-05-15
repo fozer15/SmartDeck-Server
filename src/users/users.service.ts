@@ -1,18 +1,20 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
+import { FilesService } from '../files/files.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import {AppLanguage} from '@prisma/client';
 
 @Injectable()
 export class UsersService {
-  private r2PublicUrl: string;
+  private appBaseUrl: string;
 
   constructor(
     private prisma: PrismaService,
     private env: EnvService,
+    private filesService: FilesService,
   ) {
-    this.r2PublicUrl = env.r2PublicUrl;
+    this.appBaseUrl = env.appBaseUrl;
   }
 
   async findOrCreate(dto: CreateUserDto) {
@@ -33,7 +35,7 @@ export class UsersService {
         } as any,
       });
 
-      return this.withPublicAvatarUrl(updatedUser);
+      return this.withAvatarEndpointUrl(updatedUser);
     }
 
     // Create new user with Firebase UID as ID
@@ -47,12 +49,12 @@ export class UsersService {
       } as any,
     });
 
-    return this.withPublicAvatarUrl(createdUser);
+    return this.withAvatarEndpointUrl(createdUser);
   }
 
   async findAll() {
     const users = await this.prisma.user.findMany();
-    return users.map((user) => this.withPublicAvatarUrl(user));
+    return users.map((user) => this.withAvatarEndpointUrl(user));
   }
 
   async findOne(id: string) {
@@ -60,7 +62,7 @@ export class UsersService {
       where: { id },
     });
     if (!user) throw new NotFoundException('User not found');
-    return this.withPublicAvatarUrl(user);
+    return this.withAvatarEndpointUrl(user);
   }
 
   async updateProfile(userId: string, data: { name?: string; preferredLanguage?: AppLanguage }) {
@@ -71,7 +73,7 @@ export class UsersService {
         ...(data.preferredLanguage !== undefined && { preferredLanguage: data.preferredLanguage }),
       } as any,
     });
-    return this.withPublicAvatarUrl(user);
+    return this.withAvatarEndpointUrl(user);
   }
 
   async getPublicProfile(viewerId: string, profileUserId: string) {
@@ -130,7 +132,7 @@ export class UsersService {
     return {
       id: user.id,
       name: user.name,
-      avatarUrl: this.toPublicUrl(user.avatarUrl),
+      avatarUrl: this.toAvatarUrl(user.id, user.avatarUrl),
       createdAt: user.createdAt,
       isMe: viewerId === user.id,
       isFollowing: Array.isArray(user.followers) ? user.followers.length > 0 : false,
@@ -191,22 +193,46 @@ export class UsersService {
     return { isFollowing: true, followerCount };
   }
 
-  private withPublicAvatarUrl<T extends { avatarUrl: string | null }>(user: T): T {
+  async getAvatarContent(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        avatarUrl: true,
+      },
+    });
+
+    if (!user?.avatarUrl) {
+      throw new NotFoundException('Avatar not found');
+    }
+
+    if (/^https?:\/\//i.test(user.avatarUrl)) {
+      const response = await fetch(user.avatarUrl);
+      if (!response.ok) {
+        throw new BadGatewayException('Avatar source could not be loaded');
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      return {
+        buffer,
+        mimeType: response.headers.get('content-type') || 'application/octet-stream',
+      };
+    }
+
+    return this.filesService.getObjectBuffer(user.avatarUrl);
+  }
+
+  private withAvatarEndpointUrl<T extends { id: string; avatarUrl: string | null }>(user: T): T {
     return {
       ...user,
-      avatarUrl: this.toPublicUrl(user.avatarUrl),
+      avatarUrl: this.toAvatarUrl(user.id, user.avatarUrl),
     };
   }
 
-  private toPublicUrl(value?: string | null) {
+  private toAvatarUrl(userId: string, value?: string | null) {
     if (!value) {
       return null;
     }
 
-    if (/^https?:\/\//i.test(value)) {
-      return value;
-    }
-
-    return this.r2PublicUrl ? `${this.r2PublicUrl}/${value}` : value;
+    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar`;
   }
 }

@@ -64,7 +64,7 @@ const shortAnswerEvaluationSchema = z.object({
 
 @Injectable()
 export class QuizzesService {
-  private r2PublicUrl: string;
+  private appBaseUrl: string;
   private readonly processedAttempts = new Map<string, number>();
   private readonly processedAttemptTtlMs = 30 * 60 * 1000;
   private readonly defaultBatchSize = 5;
@@ -97,24 +97,15 @@ Guidelines:
     private env: EnvService,
     private gemini: GeminiService,
   ) {
-    this.r2PublicUrl = env.r2PublicUrl;
+    this.appBaseUrl = env.appBaseUrl;
   }
 
-  private toPublicUrl(value?: string | null) {
-    if (!value) {
+  private toAvatarUrl(userId?: string | null, value?: string | null) {
+    if (!userId || !value) {
       return null;
     }
 
-    if (/^https?:\/\//i.test(value)) {
-      return value;
-    }
-
-    const encodedKey = value
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
-
-    return this.r2PublicUrl ? `${this.r2PublicUrl}/${encodedKey}` : encodedKey;
+    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar`;
   }
 
   private withDeckFilePublicUrls<T extends { files?: Array<{ r2Key?: string | null }> }>(deck: T): T {
@@ -128,7 +119,10 @@ Guidelines:
       deck && typeof deck === 'object' && 'user' in deck && deck.user && typeof deck.user === 'object'
         ? {
             ...(deck.user as Record<string, unknown>),
-            avatarUrl: this.toPublicUrl((deck.user as { avatarUrl?: string | null }).avatarUrl),
+            avatarUrl: this.toAvatarUrl(
+              (deck.user as { id?: string | null }).id,
+              (deck.user as { avatarUrl?: string | null }).avatarUrl,
+            ),
           }
         : undefined;
 
@@ -725,7 +719,7 @@ Guidelines:
         existing.push({
           id: like.user.id,
           name: like.user.name,
-          avatarUrl: this.toPublicUrl(like.user.avatarUrl),
+          avatarUrl: this.toAvatarUrl(like.user.id, like.user.avatarUrl),
         });
         likePreviewByDeckId.set(like.deckId, existing);
       }
@@ -893,7 +887,7 @@ Guidelines:
       likedUsers: deck.likes.map((like) => ({
         id: like.user.id,
         name: like.user.name,
-        avatarUrl: this.toPublicUrl(like.user.avatarUrl),
+        avatarUrl: this.toAvatarUrl(like.user.id, like.user.avatarUrl),
         likedAt: like.createdAt,
       })),
     };
