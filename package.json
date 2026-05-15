@@ -12,7 +12,8 @@
     "prisma:studio": "prisma studio"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/client-s3": "^3.1047.0",
+    "@aws-sdk/s3-request-presigner": "^3.1047.0",
     "@google-cloud/speech": "^7.3.0",
     "@google/genai": "^1.44.0",
     "@nestjs/common": "^10.0.0",

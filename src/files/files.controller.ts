@@ -115,6 +115,11 @@ export class FilesController {
     });
   }
 
+  @Get(':id/view-url')
+  getViewUrl(@Param('id') id: string, @Req() req: any) {
+    return this.filesService.getViewUrlForUser(id, req.user.uid);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string, @Req() req: any) {
     return this.filesService.findOne(id, req.user.uid);

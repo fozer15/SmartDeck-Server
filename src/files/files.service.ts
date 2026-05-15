@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/commo
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
 
 @Injectable()
@@ -9,6 +10,7 @@ export class FilesService {
   private s3: S3Client;
   private bucketName: string;
   private r2PublicUrl: string;
+  private readonly signedViewUrlTtlSeconds = 300;
 
   constructor(
     private prisma: PrismaService,
@@ -49,7 +51,7 @@ export class FilesService {
       },
     });
 
-    return this.withPublicUrl(createdFile);
+    return createdFile;
   }
 
   async uploadAvatar(userId: string, file: Express.Multer.File) {
@@ -110,11 +112,11 @@ export class FilesService {
     ]);
 
     if (!paginate) {
-      return files.map((file) => this.withPublicUrl(file));
+      return files;
     }
 
     return {
-      data: files.map((file) => this.withPublicUrl(file)),
+      data: files,
       total,
       page,
       limit,
@@ -132,7 +134,34 @@ export class FilesService {
       throw new ForbiddenException('You cannot access this file');
     }
 
-    return this.withPublicUrl(file);
+    return file;
+  }
+
+  async getViewUrlForUser(fileId: string, userId: string) {
+    const file = await this.prisma.uploadedFile.findUnique({ where: { id: fileId } });
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    if (file.userId !== userId) {
+      throw new ForbiddenException('You cannot access this file');
+    }
+
+    const url = await getSignedUrl(
+      this.s3,
+      new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: file.r2Key,
+        ResponseContentType: file.mimeType || 'application/octet-stream',
+        ResponseContentDisposition: this.buildInlineContentDisposition(file.originalName),
+      }),
+      { expiresIn: this.signedViewUrlTtlSeconds },
+    );
+
+    return {
+      url,
+      expiresIn: this.signedViewUrlTtlSeconds,
+    };
   }
 
   async remove(fileId: string, userId: string) {
@@ -201,19 +230,8 @@ export class FilesService {
     return { buffer: Buffer.concat(chunks), mimeType: file.mimeType, originalName: file.originalName };
   }
 
-  private withPublicUrl(file: {
-    id: string;
-    userId: string;
-    originalName: string;
-    r2Key: string;
-    mimeType: string;
-    size: number;
-    createdAt: Date;
-  }) {
-    return {
-      ...file,
-      publicUrl: this.toPublicUrl(file.r2Key),
-    };
+  private buildInlineContentDisposition(fileName: string) {
+    return `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`;
   }
 
   private toPublicUrl(value?: string | null) {

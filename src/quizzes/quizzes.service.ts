@@ -121,7 +121,6 @@ Guidelines:
     const files = Array.isArray(deck.files)
       ? deck.files.map((file) => ({
           ...file,
-          publicUrl: this.toPublicUrl(file.r2Key),
         }))
       : deck.files;
 
