@@ -144,6 +144,82 @@ export class UsersService {
     };
   }
 
+  async getFollowers(viewerId: string, profileUserId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: profileUserId },
+      select: {
+        followers: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            createdAt: true,
+            follower: {
+              select: {
+                id: true,
+                name: true,
+                avatarUrl: true,
+                followers: {
+                  where: { followerId: viewerId },
+                  select: { id: true },
+                  take: 1,
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return user.followers.map((entry) => ({
+      id: entry.follower.id,
+      name: entry.follower.name,
+      avatarUrl: this.toAvatarUrl(entry.follower.id, entry.follower.avatarUrl),
+      followedAt: entry.createdAt,
+      isFollowing: entry.follower.id === viewerId ? false : entry.follower.followers.length > 0,
+    }));
+  }
+
+  async getFollowing(viewerId: string, profileUserId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: profileUserId },
+      select: {
+        following: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            createdAt: true,
+            following: {
+              select: {
+                id: true,
+                name: true,
+                avatarUrl: true,
+                followers: {
+                  where: { followerId: viewerId },
+                  select: { id: true },
+                  take: 1,
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return user.following.map((entry) => ({
+      id: entry.following.id,
+      name: entry.following.name,
+      avatarUrl: this.toAvatarUrl(entry.following.id, entry.following.avatarUrl),
+      followedAt: entry.createdAt,
+      isFollowing: entry.following.id === viewerId ? false : entry.following.followers.length > 0,
+    }));
+  }
+
   async toggleFollow(viewerId: string, profileUserId: string) {
     if (viewerId === profileUserId) {
       throw new BadRequestException('You cannot follow yourself');

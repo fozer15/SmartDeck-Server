@@ -44,7 +44,7 @@ export class FilesService {
     const createdFile = await this.prisma.uploadedFile.create({
       data: {
         userId,
-        originalName: file.originalname,
+        originalName: safeFileName,
         r2Key,
         mimeType: file.mimetype,
         size: file.size,

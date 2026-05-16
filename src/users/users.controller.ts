@@ -54,6 +54,18 @@ export class UsersController {
     return this.usersService.getPublicProfile(req.user.uid, id);
   }
 
+  @Get(':id/followers')
+  @UseGuards(AuthGuard)
+  getFollowers(@Param('id') id: string, @Req() req: any) {
+    return this.usersService.getFollowers(req.user.uid, id);
+  }
+
+  @Get(':id/following')
+  @UseGuards(AuthGuard)
+  getFollowing(@Param('id') id: string, @Req() req: any) {
+    return this.usersService.getFollowing(req.user.uid, id);
+  }
+
   @Post(':id/follow')
   @UseGuards(AuthGuard)
   toggleFollow(@Param('id') id: string, @Req() req: any) {
