@@ -44,6 +44,8 @@ export class UsersService {
         id: dto.id,
         email: dto.email,
         name: dto.name,
+        school: dto.school,
+        degree: dto.degree,
         avatarUrl: dto.avatarUrl,
         preferredLanguage: dto.preferredLanguage || 'en',
       } as any,

@@ -31,11 +31,6 @@ export class UsersController {
 
   @Get(':id/avatar')
   async getAvatar(@Param('id') id: string, @Req() req: any, @Res({ passthrough: true }) response: Response) {
-    const token = this.getAuthCookie(req.headers?.cookie);
-    if (!token) {
-      throw new UnauthorizedException('Authentication required');
-    }
-    await this.authService.verifyToken(token);
     const avatar = await this.usersService.getAvatarContent(id);
     response.setHeader('Content-Type', avatar.mimeType || 'application/octet-stream');
     response.setHeader('Cache-Control', 'private, max-age=300');

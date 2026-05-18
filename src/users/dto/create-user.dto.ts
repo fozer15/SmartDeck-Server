@@ -15,6 +15,14 @@ export class CreateUserDto {
 
   @IsOptional()
   @IsString()
+  school?: string;
+
+  @IsOptional()
+  @IsString()
+  degree?: string;
+
+  @IsOptional()
+  @IsString()
   avatarUrl?: string;
 
   @IsOptional()
