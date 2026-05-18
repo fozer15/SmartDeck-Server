@@ -790,6 +790,11 @@ Guidelines:
       _count: { select: { likes: true } },
       ...(userId
         ? {
+            sessions: {
+              where: { userId },
+              select: { id: true, currentIndex: true, questionQueue: true, updatedAt: true },
+              orderBy: { updatedAt: 'desc' as const },
+            },
             likes: {
               where: { userId },
               select: { id: true },
@@ -824,6 +829,7 @@ Guidelines:
         _count: undefined,
         likes: undefined,
         saves: undefined,
+        isOwned: deck.userId === userId
       };
     });
 
