@@ -103,14 +103,16 @@ export class FilesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('name') name?: string,
+    @Query('timeOrder') timeOrder?: string,
   ) {
     const paginate = page !== undefined || limit !== undefined;
     const parsedPage = Number(page) > 0 ? Number(page) : 1;
-    const parsedLimit = Number(limit) > 0 ? Number(limit) : 6;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 5;
     return this.filesService.findAllByUser(req.user.uid, {
       page: parsedPage,
       limit: parsedLimit,
       name: name || undefined,
+      timeOrder: this.toTimeOrder(timeOrder),
       paginate,
     });
   }
@@ -136,5 +138,9 @@ export class FilesController {
   @Delete(':id')
   remove(@Param('id') id: string, @Req() req: any) {
     return this.filesService.remove(id, req.user.uid);
+  }
+
+  private toTimeOrder(value?: string): 'asc' | 'desc' {
+    return String(value || '').toLowerCase() === 'asc' ? 'asc' : 'desc';
   }
 }

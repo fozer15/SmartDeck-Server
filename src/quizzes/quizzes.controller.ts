@@ -57,15 +57,17 @@ export class QuizzesController {
     @Query('limit') limit?: string,
     @Query('title') title?: string,
     @Query('subject') subject?: string | string[],
+    @Query('timeOrder') timeOrder?: string,
   ) {
     const paginate = page !== undefined || limit !== undefined;
     const parsedPage = Number(page) > 0 ? Number(page) : 1;
-    const parsedLimit = Number(limit) > 0 ? Number(limit) : 6;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 5;
     return this.quizzesService.findAllByUser(req.user.uid, {
       page: parsedPage,
       limit: parsedLimit,
       title: title || undefined,
       subject: this.toSubjectFilters(subject),
+      timeOrder: this.toTimeOrder(timeOrder),
       paginate,
     });
   }
@@ -77,15 +79,19 @@ export class QuizzesController {
     @Query('limit') limit?: string,
     @Query('title') title?: string,
     @Query('subject') subject?: string | string[],
+    @Query('view') view?: string,
+    @Query('timeOrder') timeOrder?: string,
   ) {
     const paginate = page !== undefined || limit !== undefined;
     const parsedPage = Number(page) > 0 ? Number(page) : 1;
-    const parsedLimit = Number(limit) > 0 ? Number(limit) : 6;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 5;
     return this.quizzesService.findAllPublic(req.user.uid, {
       page: parsedPage,
       limit: parsedLimit,
       title: title || undefined,
       subject: this.toSubjectFilters(subject),
+      view: this.toPublicDeckView(view),
+      timeOrder: this.toTimeOrder(timeOrder),
       paginate,
     });
   }
@@ -97,6 +103,20 @@ export class QuizzesController {
 
     const values = (Array.isArray(subject) ? subject : [subject]).filter(Boolean);
     return values.length ? values : undefined;
+  }
+
+  private toPublicDeckView(view?: string): 'trending' | 'newest' | 'following' {
+    const normalizedView = String(view || '').toLowerCase();
+
+    if (normalizedView === 'trending' || normalizedView === 'following') {
+      return normalizedView;
+    }
+
+    return 'newest';
+  }
+
+  private toTimeOrder(value?: string): 'asc' | 'desc' {
+    return String(value || '').toLowerCase() === 'asc' ? 'asc' : 'desc';
   }
 
   @Get(':quizId/analytics')

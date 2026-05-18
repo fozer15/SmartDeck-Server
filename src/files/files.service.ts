@@ -99,12 +99,13 @@ export class FilesService {
 
   async findAllByUser(
     userId: string,
-    options?: { page?: number; limit?: number; name?: string; paginate?: boolean },
+    options?: { page?: number; limit?: number; name?: string; paginate?: boolean; timeOrder?: 'asc' | 'desc' },
   ) {
     const paginate = options?.paginate ?? false;
     const page = options?.page ?? 1;
     const limit = options?.limit ?? 6;
     const skip = (page - 1) * limit;
+    const timeOrder = options?.timeOrder === 'asc' ? 'asc' : 'desc';
 
     const where: any = { userId };
 
@@ -114,7 +115,17 @@ export class FilesService {
 
     const findArgs: any = {
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: timeOrder },
+      include: {
+        quizzes: {
+          select: {
+            id: true,
+            title: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        },
+      },
     };
 
     if (paginate) {

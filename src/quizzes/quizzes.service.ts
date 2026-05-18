@@ -634,12 +634,20 @@ Guidelines:
 
   async findAllByUser(
     userId: string,
-    options?: { page?: number; limit?: number; title?: string; subject?: string[]; paginate?: boolean },
+    options?: {
+      page?: number;
+      limit?: number;
+      title?: string;
+      subject?: string[];
+      paginate?: boolean;
+      timeOrder?: 'asc' | 'desc';
+    },
   ) {
     const paginate = options?.paginate ?? false;
     const page = options?.page ?? 1;
     const limit = options?.limit ?? 6;
     const skip = (page - 1) * limit;
+    const timeOrder = options?.timeOrder === 'asc' ? 'asc' : 'desc';
 
     const baseWhere: Prisma.GeneratedQuizWhereInput = {
       OR: [
@@ -682,7 +690,7 @@ Guidelines:
     const decks = await this.prisma.generatedQuiz.findMany({
       where,
       include: includeClause,
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: timeOrder },
       ...(paginate ? { skip, take: limit } : {}),
     });
 
@@ -767,12 +775,28 @@ Guidelines:
 
   async findAllPublic(
     userId?: string,
-    options?: { page?: number; limit?: number; title?: string; subject?: string[]; paginate?: boolean },
+    options?: {
+      page?: number;
+      limit?: number;
+      title?: string;
+      subject?: string[];
+      paginate?: boolean;
+      view?: 'trending' | 'newest' | 'following';
+      timeOrder?: 'asc' | 'desc';
+    },
   ) {
     const paginate = options?.paginate ?? false;
     const page = options?.page ?? 1;
     const limit = options?.limit ?? 6;
     const skip = (page - 1) * limit;
+    const view = options?.view ?? 'newest';
+    const timeOrder = options?.timeOrder === 'asc' ? 'asc' : 'desc';
+
+    if (view === 'following' && !userId) {
+      return paginate
+        ? { data: [], total: 0, page, limit, totalPages: 0 }
+        : [];
+    }
 
     const where: Prisma.GeneratedQuizWhereInput = { isPublic: true };
 
@@ -783,6 +807,18 @@ Guidelines:
     if (options?.subject?.length) {
       where.subject = { in: options.subject as any };
     }
+
+    if (view === 'following') {
+      where.user = {
+        followers: {
+          some: { followerId: userId },
+        },
+      };
+    }
+
+    const orderBy: Prisma.GeneratedQuizOrderByWithRelationInput[] = view === 'trending'
+      ? [{ likes: { _count: 'desc' } }, { createdAt: timeOrder }]
+      : [{ createdAt: timeOrder }];
 
     const includeClause = {
       files: { select: { id: true, originalName: true, r2Key: true } },
@@ -812,7 +848,7 @@ Guidelines:
     const decks = await this.prisma.generatedQuiz.findMany({
       where,
       include: includeClause,
-      orderBy: { createdAt: 'desc' },
+      orderBy,
       ...(paginate ? { skip, take: limit } : {}),
     });
 
@@ -829,7 +865,7 @@ Guidelines:
         _count: undefined,
         likes: undefined,
         saves: undefined,
-        isOwned: deck.userId === userId
+        isOwned: deck.userId === userId,
       };
     });
 
@@ -1646,12 +1682,17 @@ Questions the student struggled with (accuracy < 60%):
 ${analytics.questions.filter((q) => q.timesAnswered > 0 && (q.timesCorrect / q.timesAnswered) < 0.6).map((q) => `  - "${q.question}" (${q.tier}, ${Math.round((q.timesCorrect / q.timesAnswered) * 100)}% accuracy)`).join('\n') || '  None — great job!'}
 
 Guidelines:
-- Be warm, supportive, and use a conversational tone
-- Keep responses concise (2-4 short paragraphs max)
-- Use concrete examples from their data
-- If this is the first message, introduce yourself briefly, comment on their overall performance positively, then point out one strength and one area to improve with specific advice
-- Avoid overwhelming them with numbers — translate stats into plain language
-- If they ask questions, answer helpfully and relate back to their specific data
+- Be warm, supportive, and use a conversational tutor tone
+- Default to short answers that feel like natural back-and-forth, not a report
+- Start with the minimum helpful answer first; usually 2-5 sentences is enough
+- Use at most 1-2 relevant stats unless the user explicitly asks for a deeper breakdown
+- Do not dump all analytics categories at once; pick the single most relevant insight or next step
+- Only give a detailed breakdown when the user asks for more detail, asks for analysis, or the situation truly requires it
+- Translate stats into plain language and focus on what the student should do next
+- If this is the first message, introduce yourself briefly, give a quick read on how they did, mention one strength and one improvement area, then stop
+- When helpful, end with one simple follow-up question or one concrete next step
+- Avoid long lists, dense summaries, or reciting every metric unless requested
+- If they ask a narrow question, answer only that question and keep the scope tight
 - You can use emoji sparingly for friendliness`;
 
     const contents = messages.map((m) => ({
