@@ -12,6 +12,8 @@ model User {
   email         String          @unique 
   name          String?
   avatarUrl     String?
+  school        String?
+  degree        String?
   preferredLanguage AppLanguage @default(en)
   
   // Gamification & Habit Tracking

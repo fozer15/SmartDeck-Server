@@ -2,6 +2,17 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { UsersService } from '../users/users.service';
 import { EnvService } from '../env/env.service';
+import { SignInDto } from './dto/sign-in.dto';
+import { AppLanguage } from '@prisma/client';
+
+
+const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
+  en: 'English',
+  zh: 'Chinese',
+  hi: 'Hindi',
+  es: 'Spanish',
+  fr: 'French',
+};
 
 @Injectable()
 export class AuthService {
@@ -21,24 +32,27 @@ export class AuthService {
     });
   }
 
-  async signIn(idToken: string) {
+  async signIn(dto:SignInDto) {
     try {
       // Verify Firebase ID token
-      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      const decodedToken = await admin.auth().verifyIdToken(dto.idToken);
       
       // Extract user info from Firebase token
       const { uid, email, name, picture, firebase } = decodedToken;
-      
+      const {school,degree,name:OnboardingName, lang} = dto;
       const user = await this.usersService.findOrCreate({
         id: uid,
         email: email,
-        name: name || undefined,
+        school:school || undefined,
+        degree:degree || undefined,
+        preferredLanguage:lang as AppLanguage || "en",
+        name: OnboardingName || name || undefined,
         avatarUrl: picture || undefined,
       });
 
       return {
         user,
-        accessToken: idToken, // You can use Firebase token or generate your own JWT
+        accessToken: dto.idToken, // You can use Firebase token or generate your own JWT
       };
     } catch (error) {
       console.error('Error verifying Firebase ID token:', error);

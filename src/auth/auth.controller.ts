@@ -10,7 +10,7 @@ export class AuthController {
 
   @Post('sign-in')
   async signIn(@Body() dto: SignInDto, @Res({ passthrough: true }) response: Response) {
-    const result = await this.authService.signIn(dto.idToken);
+    const result = await this.authService.signIn(dto);
     this.setAuthCookie(response, result.accessToken);
     return result;
   }
@@ -18,7 +18,7 @@ export class AuthController {
   // Sign-up uses the same endpoint - Firebase handles the difference
   @Post('sign-up')
   async signUp(@Body() dto: SignInDto, @Res({ passthrough: true }) response: Response) {
-    const result = await this.authService.signIn(dto.idToken);
+    const result = await this.authService.signIn(dto);
     this.setAuthCookie(response, result.accessToken);
     return result;
   }

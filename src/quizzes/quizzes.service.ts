@@ -916,6 +916,28 @@ Guidelines:
     return { id: updated.id, isPublic: updated.isPublic };
   }
 
+  async updateDeckTitle(userId: string, id: string, title: string) {
+    if (!title || !title.trim()) {
+      throw new BadRequestException('Title cannot be empty');
+    }
+
+    const deck = await this.prisma.generatedQuiz.findFirst({
+      where: { id, userId },
+    });
+
+    if (!deck) {
+      throw new NotFoundException('Deck not found');
+    }
+
+    const updated = await this.prisma.generatedQuiz.update({
+      where: { id },
+      data: { title: title.trim() },
+      select: { id: true, title: true },
+    });
+
+    return updated;
+  }
+
    async handleLikeAction(userId: string, id: string) {
     const deck = await this.prisma.generatedQuiz.findFirst({
       where: { id, isPublic: true },

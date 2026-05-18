@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, UseGuards, Req, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, UseGuards, Req, Delete, Query } from '@nestjs/common';
 import { QuizzesService } from './quizzes.service';
 import { GenerateQuizDto } from './dto/generate-quiz.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -131,6 +131,15 @@ export class QuizzesController {
   @Post(':quizId/public')
   handlePublic(@Param('quizId') quizId: string, @Req() req: any) {
     return this.quizzesService.togglePublic(req.user.uid, quizId);
+  }
+
+  @Patch(':quizId/title')
+  updateTitle(
+    @Param('quizId') quizId: string,
+    @Req() req: any,
+    @Body() body: { title: string },
+  ) {
+    return this.quizzesService.updateDeckTitle(req.user.uid, quizId, body.title);
   }
 
   @Post(':quizId/like')
