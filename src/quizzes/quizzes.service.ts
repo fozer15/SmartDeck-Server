@@ -21,6 +21,8 @@ const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
   hi: 'Hindi',
   es: 'Spanish',
   fr: 'French',
+  tr: 'Turkish',
+  pt: 'Portuguese'
 };
 
 type StudySessionWithQuiz = Prisma.StudySessionGetPayload<{

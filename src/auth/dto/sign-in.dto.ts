@@ -17,6 +17,6 @@ export class SignInDto {
   degree?: string;
 
   @IsOptional()
-  @IsIn(['en', 'zh', 'hi', 'es', 'fr'])
+  @IsIn(['en', 'zh', 'hi', 'es', 'fr','tr','pt'])
   lang?: string;
 }

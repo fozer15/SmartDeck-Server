@@ -83,6 +83,8 @@ enum AppLanguage {
   hi
   es
   fr
+  tr
+  pt
 }
 
 // Allows for a "Mixed Deck" experience

@@ -81,6 +81,14 @@ export class FilesService {
     };
   }
 
+  async deleteFile(fileId: string) {
+    const file = await this.prisma.uploadedFile.findUnique({ where: { id: fileId } });
+    if (!file) return;
+
+    await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucketName, Key: file.r2Key })).catch(() => {});
+    await this.prisma.uploadedFile.delete({ where: { id: fileId } });
+  }
+
   async getObjectBuffer(objectKey: string): Promise<{ buffer: Buffer; mimeType: string }> {
     const response = await this.s3.send(
       new GetObjectCommand({ Bucket: this.bucketName, Key: objectKey }),

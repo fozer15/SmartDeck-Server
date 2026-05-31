@@ -4,6 +4,7 @@ import { EnvService } from '../env/env.service';
 import { FilesService } from '../files/files.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import {AppLanguage} from '@prisma/client';
+import admin from "firebase-admin";
 
 @Injectable()
 export class UsersService {
@@ -58,6 +59,31 @@ export class UsersService {
     const users = await this.prisma.user.findMany();
     return users.map((user) => this.withAvatarEndpointUrl(user));
   }
+  //TODO can be turned to soft delete later
+  async deleteAccount(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Delete all uploaded files from R2 before deleting the user
+    const files = await this.prisma.uploadedFile.findMany({
+      where: { userId },
+      select: { id: true, r2Key: true },
+    });
+
+    for (const file of files) {
+      await this.filesService.deleteFile(file.id).catch(() => {});
+    }
+
+    // Cascades handle sessions, quizzes, likes, saves, follows
+    await admin.auth().deleteUser(userId);
+    await this.prisma.user.delete({ where: { id: userId } });
+
+    return { success: true };
+  }
+
 
   async findOne(id: string) {
     const user = await this.prisma.user.findUnique({

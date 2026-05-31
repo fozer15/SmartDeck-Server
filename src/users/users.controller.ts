@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, Res, StreamableFile, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, Res, StreamableFile, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -65,6 +65,19 @@ export class UsersController {
   @UseGuards(AuthGuard)
   toggleFollow(@Param('id') id: string, @Req() req: any) {
     return this.usersService.toggleFollow(req.user.uid, id);
+  }
+
+  @Delete('me')
+  @UseGuards(AuthGuard)
+  async deleteAccount(@Req() req: any, @Res({ passthrough: true }) response: Response) {
+    const result = await this.usersService.deleteAccount(req.user.uid);
+    response.clearCookie(AUTH_TOKEN_COOKIE, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      path: '/',
+    });
+    return result;
   }
 
   private getAuthCookie(cookieHeader?: string) {
