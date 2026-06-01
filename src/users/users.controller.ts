@@ -45,7 +45,7 @@ export class UsersController {
 
   @Patch('me/profile')
   @UseGuards(AuthGuard)
-  updateProfile(@Req() req: any, @Body() body: { name?: string; preferredLanguage?: AppLanguage }) {
+  updateProfile(@Req() req: any, @Body() body: { name?: string; preferredLanguage?: AppLanguage; school?: string; degree?: string }) {
     return this.usersService.updateProfile(req.user.uid, body);
   }
 

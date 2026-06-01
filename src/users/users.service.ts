@@ -125,12 +125,14 @@ export class UsersService {
     return this.withAvatarEndpointUrl(user);
   }
 
-  async updateProfile(userId: string, data: { name?: string; preferredLanguage?: AppLanguage }) {
+  async updateProfile(userId: string, data: { name?: string; preferredLanguage?: AppLanguage; school?: string; degree?: string }) {
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.preferredLanguage !== undefined && { preferredLanguage: data.preferredLanguage }),
+        ...(data.school !== undefined && { school: data.school }),
+        ...(data.degree !== undefined && { degree: data.degree }),
       } as any,
     });
     return this.withAvatarEndpointUrl(user);
@@ -144,6 +146,8 @@ export class UsersService {
         name: true,
         avatarUrl: true,
         createdAt: true,
+        school: true,
+        degree: true,
         _count: {
           select: {
             followers: true,
@@ -165,6 +169,8 @@ export class UsersService {
             title: true,
             subject: true,
             createdAt: true,
+            questionCount: true,
+            questionFormat: true,
             _count: {
               select: {
                 likes: true,
@@ -185,6 +191,8 @@ export class UsersService {
       subject: deck.subject,
       createdAt: deck.createdAt,
       likeCount: deck._count.likes,
+      questionCount: deck.questionCount,
+      questionFormat: deck.questionFormat
     }));
 
     const totalLikes = publicDecks.reduce((sum, deck) => sum + Number(deck.likeCount || 0), 0);
@@ -192,6 +200,8 @@ export class UsersService {
     return {
       id: user.id,
       name: user.name,
+      school:user.school,
+      degree:user.degree,
       avatarUrl: this.toAvatarUrl(user.id, user.avatarUrl),
       createdAt: user.createdAt,
       isMe: viewerId === user.id,
