@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, Res, StreamableFile, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, StreamableFile, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -22,6 +22,12 @@ export class UsersController {
   @Get()
   findAll() {
     return this.usersService.findAll();
+  }
+
+  @Get('search')
+  @UseGuards(AuthGuard)
+  searchUsers(@Req() req: any, @Query('q') q?: string) {
+    return this.usersService.searchByName(req.user.uid, q || '');
   }
 
   @Get(':id')

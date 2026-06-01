@@ -775,6 +775,73 @@ Guidelines:
     };
   }
 
+  async searchPublicDecks(
+    userId: string,
+    options: {
+      title?: string;
+      subject?: string[];
+      school?: string;
+      page?: number;
+      limit?: number;
+      paginate?: boolean;
+    },
+  ) {
+    const paginate = options.paginate ?? false;
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 12;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.GeneratedQuizWhereInput = { isPublic: true };
+
+    if (options.title) {
+      where.title = { contains: options.title.trim(), mode: 'insensitive' };
+    }
+
+    if (options.subject?.length) {
+      where.subject = { in: options.subject as any };
+    }
+
+    if (options.school) {
+      where.user = {
+        school: { contains: options.school.trim(), mode: 'insensitive' },
+      };
+    }
+
+    const includeClause = {
+      files: { select: { id: true, originalName: true, r2Key: true } },
+      user: { select: { id: true, name: true, avatarUrl: true, school: true } },
+      _count: { select: { likes: true } },
+      likes: { where: { userId }, select: { id: true }, take: 1 },
+      saves: { where: { userId }, select: { id: true }, take: 1 },
+    };
+
+    const [decks, total] = await Promise.all([
+      this.prisma.generatedQuiz.findMany({
+        where,
+        include: includeClause,
+        orderBy: { createdAt: 'desc' },
+        skip: paginate ? skip : 0,
+        take: paginate ? limit : 50,
+      }),
+      paginate ? this.prisma.generatedQuiz.count({ where }) : Promise.resolve(0),
+    ]);
+
+    const data = decks.map((deck: any) => ({
+      ...this.withDeckFilePublicUrls(deck),
+      files: [],
+      likeCount: deck._count?.likes ?? 0,
+      likedByMe: (deck.likes?.length ?? 0) > 0,
+      savedByMe: (deck.saves?.length ?? 0) > 0,
+      _count: undefined,
+      likes: undefined,
+      saves: undefined,
+    }));
+
+    if (!paginate) return data;
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
   async findAllPublic(
     userId?: string,
     options?: {

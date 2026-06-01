@@ -72,6 +72,31 @@ export class QuizzesController {
     });
   }
 
+  @Get('search')
+  searchPublicDecks(
+    @Req() req: any,
+    @Query('q') title?: string,
+    @Query('subject') subject?: string | string[],
+    @Query('school') school?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    console.log(subject);
+    console.log(title);
+    console.log(school);
+    const paginate = page !== undefined || limit !== undefined;
+    const parsedPage = Number(page) > 0 ? Number(page) : 1;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 12;
+    return this.quizzesService.searchPublicDecks(req.user.uid, {
+      title: title || undefined,
+      subject: this.toSubjectFilters(subject),
+      school: school || undefined,
+      page: parsedPage,
+      limit: parsedLimit,
+      paginate,
+    });
+  }
+
   @Get('public')
   findAllPublic(
     @Req() req: any,

@@ -55,6 +55,38 @@ export class UsersService {
     return this.withAvatarEndpointUrl(createdUser);
   }
 
+  async searchByName(viewerId: string, query: string) {
+    if (!query || query.trim().length < 1) {
+      return [];
+    }
+
+    const users = await this.prisma.user.findMany({
+      where: {
+        name: { contains: query.trim(), mode: 'insensitive' },
+        id: { not: viewerId },
+      },
+      select: {
+        id: true,
+        name: true,
+        avatarUrl: true,
+        followers: {
+          where: { followerId: viewerId },
+          select: { id: true },
+          take: 1,
+        },
+      },
+      take: 20,
+      orderBy: { name: 'asc' },
+    });
+
+    return users.map((user) => ({
+      id: user.id,
+      name: user.name,
+      avatarUrl: this.toAvatarUrl(user.id, user.avatarUrl),
+      isFollowing: user.followers.length > 0,
+    }));
+  }
+
   async findAll() {
     const users = await this.prisma.user.findMany();
     return users.map((user) => this.withAvatarEndpointUrl(user));
