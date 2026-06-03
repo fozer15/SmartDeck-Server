@@ -391,8 +391,12 @@ Guidelines:
       return this.generateFromAudio(userId, dto);
     }
 
+    if (dto.text && dto.text.trim().length > 0) {
+      return this.generateFromText(userId, dto);
+    }
+
     if (!dto.fileIds || dto.fileIds.length === 0) {
-      throw new BadRequestException('Either fileIds or audioFileId is required');
+      throw new BadRequestException('Either fileIds, audioFileId, or text is required');
     }
 
     const pageSelectionsByFileId = this.normalizePageSelections(dto.fileIds, dto.pageSelections);
@@ -592,6 +596,63 @@ Guidelines:
         await this.gemini.deleteFile({ name: uploadedFileName }).catch(() => {});
       }
     }
+  }
+
+  private async generateFromText(userId: string, dto: GenerateQuizDto) {
+    const sourceText = dto.text?.trim();
+    if (!sourceText) {
+      throw new BadRequestException('text is required');
+    }
+
+    const generationLanguage = await this.getUserPreferredLanguage(userId);
+    const prompt = this.buildPrompt(dto, generationLanguage);
+    const fullPrompt = `The following is study material pasted by the user (notes, lecture text, article, etc.). Use it as the sole source material to generate quiz questions. Do not invent facts that are not supported by the text.\n\n--- USER NOTES START ---\n${sourceText}\n--- USER NOTES END ---\n\n${prompt}`;
+
+    const quizResponse = await this.gemini.generateContent({
+      contents: [{ parts: [{ text: fullPrompt }] }],
+      config: {
+        responseMimeType: 'application/json',
+        responseJsonSchema: zodToJsonSchema(quizResponseSchema as any),
+      },
+    });
+
+    const quizData = quizResponseSchema.parse(this.normalizeGeneratedQuizData(JSON.parse(quizResponse.text)));
+    const generatedQuestionCount = quizData.quizzes.length;
+    const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
+    const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
+
+    const createdDeck = await this.prisma.generatedQuiz.create({
+      data: {
+        userId,
+        rigorIndex: quizData.rigorIndex,
+        gradingContext: quizData.gradingContext,
+        title: dto.title || `Untitled Quiz ${new Date().toLocaleString()}`,
+        subject: dto.subject || undefined,
+        language: generationLanguage,
+        questionCount: dto.questionCount || generatedQuestionCount,
+        questionTier: dto.questionTier || (generatedTiers.length > 1 ? 'mixed' : generatedTiers[0]),
+        questionFormat: dto.questionFormat || (generatedFormats.length > 1 ? 'mixed' : generatedFormats[0]),
+        questions: {
+          create: quizData.quizzes.map((q, index) => ({
+            format: q.format,
+            question: q.question,
+            options: q.format === 'multiple_choice' ? q.options : [],
+            correctAnswer: q.correctAnswer,
+            explanation: q.explanation,
+            gradingContext: q.gradingContext,
+            tier: q.tier,
+            topic: q.topic,
+            orderIndex: index,
+          })),
+        },
+      },
+      include: {
+        questions: { orderBy: { orderIndex: 'asc' } },
+        files: { select: { id: true, originalName: true, r2Key: true } },
+      },
+    });
+
+    return this.withDeckFilePublicUrls(createdDeck);
   }
 
   private buildPrompt(dto: GenerateQuizDto, language: AppLanguage = 'en') {
@@ -852,6 +913,7 @@ Guidelines:
       paginate?: boolean;
       view?: 'trending' | 'newest' | 'following';
       timeOrder?: 'asc' | 'desc';
+      filterUserId?: string;
     },
   ) {
     const paginate = options?.paginate ?? false;
@@ -868,6 +930,10 @@ Guidelines:
     }
 
     const where: Prisma.GeneratedQuizWhereInput = { isPublic: true };
+
+    if (options?.filterUserId) {
+      where.userId = options.filterUserId;
+    }
 
     if (options?.title) {
       where.title = { contains: options.title, mode: 'insensitive' };

@@ -1,5 +1,5 @@
 import { Subject, QuizTierPreference, QuizFormatPreference } from '@prisma/client';
-import { IsString, IsOptional, IsArray, IsEnum, IsInt, Min, Max, IsNotEmpty, IsObject } from 'class-validator';
+import { IsString, IsOptional, IsArray, IsEnum, IsInt, Min, Max, IsNotEmpty, IsObject, MaxLength, MinLength } from 'class-validator';
 
 export class GenerateQuizDto {
   @IsNotEmpty()
@@ -22,6 +22,14 @@ export class GenerateQuizDto {
   @IsOptional()
   @IsString()
   audioFileId?: string;
+
+  // Free-form notes/text the user pasted in. When provided (and no files/audio),
+  // the deck will be generated directly from this text.
+  @IsOptional()
+  @IsString()
+  @MinLength(20, { message: 'text must be at least 20 characters' })
+  @MaxLength(100_000, { message: 'text is too long (max 100,000 characters)' })
+  text?: string;
 
   @IsOptional()
   @IsInt()

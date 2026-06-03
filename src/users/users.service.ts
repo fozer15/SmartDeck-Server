@@ -31,6 +31,7 @@ export class UsersService {
         data: {
           email: dto.email,
           name: existingUser.name || dto.name,
+          school: existingUser.school || dto.school,
           avatarUrl: existingUser.avatarUrl || dto.avatarUrl,
           preferredLanguage: (existingUser as { preferredLanguage?: AppLanguage }).preferredLanguage || dto.preferredLanguage || 'en',
         } as any,
@@ -139,6 +140,8 @@ export class UsersService {
   }
 
   async getPublicProfile(viewerId: string, profileUserId: string) {
+    const isMe = viewerId === profileUserId;
+
     const user = await this.prisma.user.findUnique({
       where: { id: profileUserId },
       select: {
@@ -152,6 +155,7 @@ export class UsersService {
           select: {
             followers: true,
             following: true,
+            quizzes: isMe ? true : { where: { isPublic: true } } as any,
           },
         },
         followers: viewerId
@@ -162,7 +166,7 @@ export class UsersService {
             }
           : false,
         quizzes: {
-          where: { isPublic: true },
+          where: isMe ? {} : { isPublic: true },
           orderBy: { createdAt: 'desc' },
           select: {
             id: true,
@@ -171,6 +175,7 @@ export class UsersService {
             createdAt: true,
             questionCount: true,
             questionFormat: true,
+            isPublic: true,
             _count: {
               select: {
                 likes: true,
@@ -185,32 +190,34 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    const publicDecks = user.quizzes.map((deck) => ({
+    const decks = user.quizzes.map((deck) => ({
       id: deck.id,
       title: deck.title,
       subject: deck.subject,
       createdAt: deck.createdAt,
       likeCount: deck._count.likes,
       questionCount: deck.questionCount,
-      questionFormat: deck.questionFormat
+      questionFormat: deck.questionFormat,
+      isPublic: deck.isPublic,
     }));
 
-    const totalLikes = publicDecks.reduce((sum, deck) => sum + Number(deck.likeCount || 0), 0);
+    const totalLikes = decks.reduce((sum, deck) => sum + Number(deck.likeCount || 0), 0);
 
     return {
       id: user.id,
       name: user.name,
-      school:user.school,
-      degree:user.degree,
+      school: user.school,
+      degree: user.degree,
       avatarUrl: this.toAvatarUrl(user.id, user.avatarUrl),
       createdAt: user.createdAt,
-      isMe: viewerId === user.id,
+      isMe,
       isFollowing: Array.isArray(user.followers) ? user.followers.length > 0 : false,
       followerCount: user._count.followers,
       followingCount: user._count.following,
-      publicDeckCount: publicDecks.length,
+      // when viewing own profile: total decks (public + private). Otherwise: only public decks.
+      deckCount: user._count.quizzes,
       totalLikes,
-      publicDecks,
+      publicDecks: decks,
     };
   }
 

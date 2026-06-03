@@ -106,6 +106,7 @@ export class QuizzesController {
     @Query('subject') subject?: string | string[],
     @Query('view') view?: string,
     @Query('timeOrder') timeOrder?: string,
+    @Query('userId') userId?: string,
   ) {
     const paginate = page !== undefined || limit !== undefined;
     const parsedPage = Number(page) > 0 ? Number(page) : 1;
@@ -118,6 +119,7 @@ export class QuizzesController {
       view: this.toPublicDeckView(view),
       timeOrder: this.toTimeOrder(timeOrder),
       paginate,
+      filterUserId: userId || undefined,
     });
   }
 
