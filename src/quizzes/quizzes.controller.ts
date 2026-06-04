@@ -156,13 +156,30 @@ export class QuizzesController {
     return this.quizzesService.getDeckLikesForOwner(req.user.uid, quizId);
   }
 
-  @Post(':quizId/tutor-chat')
-  tutorChat(
+ @Get(':quizId/tutor-chat')
+  getTutorHistory(
     @Param('quizId') quizId: string,
     @Req() req: any,
-    @Body() body: { messages: { role: 'user' | 'assistant'; text: string }[] },
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.quizzesService.tutorChat(req.user.uid, quizId, body.messages ?? []);
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 20; // Default to 20 messages per chunk
+    return this.quizzesService.getTutorChatHistory(req.user.uid, quizId, cursor, parsedLimit);
+  }
+
+  @Delete(':quizId/tutor-chat')
+  clearTutorHistory(@Param('quizId') quizId: string, @Req() req: any) {
+    return this.quizzesService.clearTutorChatHistory(req.user.uid, quizId);
+  }
+
+  @Post(':quizId/tutor-chat')
+  async tutorChat(
+    @Param('quizId') quizId: string,
+    @Req() req: any,
+    @Body() body: { text: string }, // Strictly expect only the text
+  ) {
+    // Call your service function with just the clean text
+    return this.quizzesService.tutorChat(req.user.uid, quizId, body.text.trim());
   }
 
   @Get(':quizId')

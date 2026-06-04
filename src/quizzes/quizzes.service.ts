@@ -1787,13 +1787,82 @@ Guidelines:
     }));
   }
 
+  async clearTutorChatHistory(userId: string, quizId: string) {
+    const conversation = await this.prisma.tutorConversation.findUnique({
+      where: { userId_quizId: { userId, quizId } },
+    });
+
+    if (!conversation) return { success: true };
+
+    // Cascade delete handles the messages automatically
+    await this.prisma.tutorConversation.delete({
+      where: { id: conversation.id },
+    });
+
+    return { success: true };
+  }
+
+  async getTutorChatHistory(userId: string, quizId: string, cursor?: string, limit: number = 20) {
+    const conversation = await this.prisma.tutorConversation.findUnique({
+      where: {
+        userId_quizId: { userId, quizId },
+      },
+    });
+
+    if (!conversation) {
+      return { messages: [], nextCursor: null };
+    }
+
+    // Fetch messages from newest to oldest to easily find the next page
+    const messages = await this.prisma.tutorMessage.findMany({
+      where: { conversationId: conversation.id },
+      take: limit + 1, // Fetch one extra to check if there are more pages
+      skip: cursor ? 1 : 0, // Skip the cursor message itself
+      ...(cursor && { cursor: { id: cursor } }),
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, role: true, text: true, createdAt: true },
+    });
+
+    let nextCursor = null;
+    if (messages.length > limit) {
+      const nextItem = messages.pop(); // Remove the extra item
+      nextCursor = nextItem.id; // The ID to send next time to fetch older messages
+    }
+
+    // Reverse to return them in standard chronological order (oldest -> newest)
+    return { 
+      messages: messages.reverse(), 
+      nextCursor 
+    };
+  }
+
   async tutorChat(
     userId: string,
     quizId: string,
-    messages: { role: 'user' | 'assistant'; text: string }[],
+    userText: string, // <-- Changed from array to a single text string
   ) {
+    // 1. Find or create the conversation thread in the DB
+
+    console.log("hererere");
+    const conversation = await this.prisma.tutorConversation.upsert({
+      where: { userId_quizId: { userId, quizId } },
+      create: { userId, quizId },
+      update: {},
+    });
+
+    // 2. Save the new user message to the DB
+    await this.prisma.tutorMessage.create({
+      data: {
+        conversationId: conversation.id,
+        role: 'user',
+        text: userText,
+      },
+    });
+
+    // 3. Fetch analytics (Your existing logic)
     const analytics = await this.getDeckAnalytics(userId, quizId);
 
+    // 4. Build system instruction (Your existing logic)
     const systemInstruction = `You are a friendly, encouraging AI study tutor. The student just reviewed their quiz analytics and you are here to help them understand their performance and guide them on what to focus on next.
 
 Here is the student's analytics data for the deck "${analytics.deckTitle}":
@@ -1801,7 +1870,6 @@ Here is the student's analytics data for the deck "${analytics.deckTitle}":
 - Total Questions: ${analytics.totalQuestions}
 - Total Attempts: ${analytics.totalAnswered}
 - Overall Accuracy: ${analytics.overallAccuracy}%
-- Rigor Index: ${analytics.rigorIndex}
 - Session complete: ${analytics.sessionComplete}
 
 Tier breakdown:
@@ -1830,19 +1898,23 @@ Guidelines:
 - If they ask a narrow question, answer only that question and keep the scope tight
 - You can use emoji sparingly for friendliness`;
 
-    const contents = messages.map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
+    // 5. Fetch chat history from the DB (Limits to last 20 messages for context size)
+    const recentMessages = await this.prisma.tutorMessage.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'asc' },
+      take: 20, 
+    });
+
+    // 6. Map DB history to Gemini format (Your existing mapping)
+    const contents = recentMessages.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user', // Adjusted to match your DB enum -> Gemini
       parts: [{ text: m.text }],
     }));
 
-    // If no user messages yet, add a trigger
-    if (contents.length === 0) {
-      contents.push({
-        role: 'user',
-        parts: [{ text: 'Hi! I just finished reviewing my quiz results. Can you help me understand how I did and what I should focus on?' }],
-      });
-    }
+    // (Removed the hardcoded "Hi!" trigger here because the DB will always 
+    // have at least the user's initial message saved in step 2)
 
+    // 7. Call Gemini (Your existing logic)
     const response = await this.gemini.generateContent({
       contents,
       config: {
@@ -1850,6 +1922,16 @@ Guidelines:
       },
     });
 
-    return { reply: response.text };
-  }
-}
+    const aiReplyText = response.text;
+
+    // 8. Save the AI's response back to the DB
+    await this.prisma.tutorMessage.create({
+      data: {
+        conversationId: conversation.id,
+        role: 'assistant',
+        text: aiReplyText,
+      },
+    });
+
+    return { reply: aiReplyText };
+    }}

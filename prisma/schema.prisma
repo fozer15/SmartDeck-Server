@@ -27,7 +27,8 @@ model User {
   quizzes       GeneratedQuiz[]
   sessions      StudySession[]  // Links to active study states
   likes         DeckLike[]
-  saves         DeckSave[] 
+  saves         DeckSave[]
+  tutorConversations TutorConversation[] 
   following     UserFollow[]    @relation("UserFollowing")
   followers     UserFollow[]    @relation("UserFollowers")
 }
@@ -68,7 +69,52 @@ model GeneratedQuiz {
   questions   QuizQuestion[]
   sessions    StudySession[]
   likes       DeckLike[]
-  saves       DeckSave[] 
+  saves       DeckSave[]
+  tutorConversations TutorConversation[] 
+}
+
+model TutorConversation {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quizId    String
+  quiz      GeneratedQuiz  @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  
+  // Track system contexts or metadata if the AI needs an overarching summary 
+  summary   String?        // Optional: LLM-generated headline of what was discussed
+  
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  messages  TutorMessage[]
+
+  // Ensures a clean 1:1 mapping if a user has exactly one running chat session per deck.
+  // If you want history lines (multiple independent chats per deck), remove @@unique and use @@index instead.
+  @@unique([userId, quizId])
+  @@index([userId])
+  @@index([quizId])
+}
+
+enum TutorRole {
+  user
+  assistant
+  system
+}
+
+model TutorMessage {
+  id             String            @id @default(cuid())
+  conversationId String
+  conversation   TutorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  
+  role           TutorRole         @default(user)
+  text           String            @db.Text // Guarantees support for lengthy explanations and markdown tables
+  
+  // Optional: tracking metadata for contextual AI actions
+  isFlagged      Boolean           @default(false)
+  
+  createdAt      DateTime          @default(now())
+
+  // Fast historical lookups inside the chat log window
+  @@index([conversationId, createdAt])
 }
 
 enum QuestionTier {
