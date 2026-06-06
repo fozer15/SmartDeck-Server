@@ -41,6 +41,7 @@ export class UsersService {
     }
 
     // Create new user with Firebase UID as ID
+
     const createdUser = await this.prisma.user.create({
       data: {
         id: dto.id,
@@ -53,6 +54,12 @@ export class UsersService {
       } as any,
     });
 
+    await this.prisma.userUsageLimit.create({
+      data:{
+        userId:dto.id,
+      }
+    })
+    
     return this.withAvatarEndpointUrl(createdUser);
   }
 

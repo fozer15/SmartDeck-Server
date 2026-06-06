@@ -155,6 +155,7 @@ Guidelines:
       OR: [
         { userId },
         { saves: { some: { userId } } },
+        {isPublic : true}
       ],
     };
   }

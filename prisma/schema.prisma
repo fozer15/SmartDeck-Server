@@ -31,6 +31,30 @@ model User {
   tutorConversations TutorConversation[] 
   following     UserFollow[]    @relation("UserFollowing")
   followers     UserFollow[]    @relation("UserFollowers")
+  usageLimit      UserUsageLimit?
+}
+
+model UserUsageLimit {
+  id                    String   @id @default(cuid())
+  
+  // 1-to-1 Relation with User
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+
+  pdfPagesUsed     Int      @default(0) 
+  audioMinutesUsed Int      @default(0)  
+  aiCreditsUsed    Int      @default(0)  
+  imageUsed        Int      @default(0)
+  tutorChatUsed    Int      @default(0)      
+  textCharacterUsed Int     @default(0)
+
+  lastResetDate         DateTime @default(now())
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([userId])
 }
 
 model UploadedFile {
