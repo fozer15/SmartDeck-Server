@@ -128,6 +128,14 @@ export class UsersService {
   async findOne(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
+      include:{
+        usageLimit:{
+          select:{
+            aiCreditsUsed:true,
+            tutorChatUsed:true
+          }
+        },
+      }
     });
     if (!user) throw new NotFoundException('User not found');
     return this.withAvatarEndpointUrl(user);

@@ -28,7 +28,7 @@ export class GenerateQuizDto {
   @IsOptional()
   @IsString()
   @MinLength(20, { message: 'text must be at least 20 characters' })
-  @MaxLength(100_000, { message: 'text is too long (max 100,000 characters)' })
+  @MaxLength(50_000, { message: 'text is too long (max 100,000 characters)' })
   text?: string;
 
   @IsOptional()

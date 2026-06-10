@@ -4,7 +4,9 @@ import { EnvService } from '../env/env.service';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
-
+import { PDFDocument } from 'pdf-lib';
+import {RevenueCatService} from "../revenueCat/revenuecat.service"
+import {APP_LIMITS, PlanType} from "../config/plan-limits"
 @Injectable()
 export class FilesService {
   private s3: S3Client;
@@ -15,6 +17,8 @@ export class FilesService {
   constructor(
     private prisma: PrismaService,
     private env: EnvService,
+    private revenueCat: RevenueCatService
+  
   ) {
     this.s3 = new S3Client({
       region: 'auto',
@@ -31,6 +35,30 @@ export class FilesService {
   async upload(userId: string, file: Express.Multer.File) {
     const safeFileName = this.toStorageSafeFileName(file.originalname);
     const r2Key = `uploads/${userId}/files/${Date.now()}-${safeFileName}`;
+    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId,"SmartDeck Pro");
+    
+    if (!hasActiveEntitlement && file.mimetype === 'application/pdf') {
+      try {
+        const pdfDoc = await PDFDocument.load(file.buffer);
+        const pageCount = pdfDoc.getPageCount();
+        
+        const usage = await this.prisma.userUsageLimit.findUnique({
+          where:{
+            userId
+          }
+        })
+
+        if(usage.pdfPagesUsed + pageCount > APP_LIMITS.MONTHLY_QUOTAS["FREE"].pdfPages){
+          return {status:"Limit Reached"}
+        }
+
+        this.prisma.userUsageLimit.update({where:{userId},data:{pdfPagesUsed:usage.pdfPagesUsed + pageCount}})
+
+      } catch (error) {
+        // We catch the error here so an invalid/corrupt PDF won't break the upload logic
+        console.error(`[PDF ERROR] Could not read page count for ${safeFileName}:`, error);
+      }
+    }
 
     await this.s3.send(
       new PutObjectCommand({

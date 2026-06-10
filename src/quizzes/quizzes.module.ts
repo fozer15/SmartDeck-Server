@@ -3,9 +3,10 @@ import { QuizzesController } from './quizzes.controller';
 import { QuizzesService } from './quizzes.service';
 import { FilesModule } from '../files/files.module';
 import { AuthModule } from '../auth/auth.module';
+import { RevenueCatModule } from 'src/revenueCat/revenuecat.module';
 
 @Module({
-  imports: [FilesModule, AuthModule],
+  imports: [FilesModule, AuthModule, RevenueCatModule],
   controllers: [QuizzesController],
   providers: [QuizzesService],
 })

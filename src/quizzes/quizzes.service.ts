@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FilesService } from '../files/files.service';
 import { EnvService } from '../env/env.service';
 import { GeminiService } from '../env/gemini.service';
+import {RevenueCatService} from "../revenueCat/revenuecat.service"
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import { quizResponseSchema } from './schemas/quiz.schema';
@@ -14,6 +15,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { PDFDocument } from 'pdf-lib';
 import {AppLanguage} from '@prisma/client'
+import {APP_LIMITS, PlanType} from "../config/plan-limits"
 
 const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
   en: 'English',
@@ -98,6 +100,7 @@ Guidelines:
     private filesService: FilesService,
     private env: EnvService,
     private gemini: GeminiService,
+    private revenueCat: RevenueCatService
   ) {
     this.appBaseUrl = env.appBaseUrl;
   }
@@ -388,6 +391,19 @@ Guidelines:
   }
 
   async generate(userId: string, dto: GenerateQuizDto) {
+
+    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId,"SmartDeck Pro");
+    
+    if(!hasActiveEntitlement){
+       const usage = await this.prisma.userUsageLimit.findUnique({where:{
+          userId
+       }})
+
+       if(usage.aiCreditsUsed + 1 > APP_LIMITS.MONTHLY_QUOTAS["FREE"].aiCredits){
+         throw new ForbiddenException('Free limit reached!')
+       }
+    }
+
     if (dto.audioFileId) {
       return this.generateFromAudio(userId, dto);
     }
@@ -1860,6 +1876,8 @@ Guidelines:
       },
     });
 
+    const generationLanguage = await this.getUserPreferredLanguage(userId);
+
     // 3. Fetch analytics (Your existing logic)
     const analytics = await this.getDeckAnalytics(userId, quizId);
 
@@ -1886,6 +1904,7 @@ Questions the student struggled with (accuracy < 60%):
 ${analytics.questions.filter((q) => q.timesAnswered > 0 && (q.timesCorrect / q.timesAnswered) < 0.6).map((q) => `  - "${q.question}" (${q.tier}, ${Math.round((q.timesCorrect / q.timesAnswered) * 100)}% accuracy)`).join('\n') || '  None — great job!'}
 
 Guidelines:
+- Language requirement: write all AI tutor interactions entirely in ${APP_LANGUAGE_LABELS[generationLanguage]}, including greetings, explanations, examples, hints, feedback, follow-up questions, learning summaries, corrections, and recommendations. Maintain a natural conversational tone in the selected language. Do not mix languages or translate content unless the user explicitly requests it.
 - Be warm, supportive, and use a conversational tutor tone
 - Default to short answers that feel like natural back-and-forth, not a report
 - Start with the minimum helpful answer first; usually 2-5 sentences is enough
