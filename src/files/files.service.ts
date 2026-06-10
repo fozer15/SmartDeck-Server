@@ -1,12 +1,14 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
 import { PDFDocument } from 'pdf-lib';
-import {RevenueCatService} from "../revenueCat/revenuecat.service"
-import {APP_LIMITS, PlanType} from "../config/plan-limits"
+import { RevenueCatService } from "../revenueCat/revenuecat.service";
+import { APP_LIMITS, PlanType } from "../config/plan-limits";
+import { parseBuffer } from 'music-metadata';
+
 @Injectable()
 export class FilesService {
   private s3: S3Client;
@@ -18,7 +20,6 @@ export class FilesService {
     private prisma: PrismaService,
     private env: EnvService,
     private revenueCat: RevenueCatService
-  
   ) {
     this.s3 = new S3Client({
       region: 'auto',
@@ -35,31 +36,86 @@ export class FilesService {
   async upload(userId: string, file: Express.Multer.File) {
     const safeFileName = this.toStorageSafeFileName(file.originalname);
     const r2Key = `uploads/${userId}/files/${Date.now()}-${safeFileName}`;
-    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId,"SmartDeck Pro");
+    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId, "SmartDeck Pro");
     
-    if (!hasActiveEntitlement && file.mimetype === 'application/pdf') {
-      try {
-        const pdfDoc = await PDFDocument.load(file.buffer);
-        const pageCount = pdfDoc.getPageCount();
-        
-        const usage = await this.prisma.userUsageLimit.findUnique({
-          where:{
-            userId
-          }
-        })
+    // --- PRO GUARDS ---
+    if (!hasActiveEntitlement) {
+      // Fetch usage once for all file types
+      const usage = await this.prisma.userUsageLimit.findUnique({
+        where: { userId }
+      });
 
-        if(usage.pdfPagesUsed + pageCount > APP_LIMITS.MONTHLY_QUOTAS["FREE"].pdfPages){
-          return {status:"Limit Reached"}
+      if (!usage) {
+        throw new NotFoundException('User usage records not found.');
+      }
+
+      // 1. PDF Limits
+      if (file.mimetype === 'application/pdf') {
+        if (usage.pdfPagesUsed >= APP_LIMITS.MONTHLY_QUOTAS["FREE"].pdfPages) {
+          return { status: "pro_needed" };
         }
 
-        this.prisma.userUsageLimit.update({where:{userId},data:{pdfPagesUsed:usage.pdfPagesUsed + pageCount}})
+        let pageCount = 0;
+        try {
+          const pdfDoc = await PDFDocument.load(file.buffer);
+          pageCount = pdfDoc.getPageCount();
+        } catch (error) {
+          // Catching pdf-lib errors specifically so we can reject the upload entirely
+          throw new BadRequestException(`Could not parse PDF file: ${safeFileName}. The file may be corrupt.`);
+        }
 
-      } catch (error) {
-        // We catch the error here so an invalid/corrupt PDF won't break the upload logic
-        console.error(`[PDF ERROR] Could not read page count for ${safeFileName}:`, error);
+        if (usage.pdfPagesUsed + pageCount > APP_LIMITS.MONTHLY_QUOTAS["FREE"].pdfPages) {
+          return { status: "pro_needed" };
+        }
+
+        await this.prisma.userUsageLimit.update({ 
+          where: { userId }, 
+          data: { pdfPagesUsed: { increment: pageCount } } 
+        });
+      }
+
+      // 2. Audio Limits
+      else if (file.mimetype.startsWith('audio/')) {
+        if (usage.audioMinutesUsed >= APP_LIMITS.MONTHLY_QUOTAS["FREE"].audioMinutes) {
+          return { status: "pro_needed" };
+        }
+
+        let durationInMinutes = 0;
+        try {
+          const metadata = await parseBuffer(file.buffer, { mimeType: file.mimetype });
+          if (!metadata.format.duration) {
+             throw new Error('No duration found');
+          }
+          durationInMinutes = Number((metadata.format.duration / 60).toFixed(2));
+        } catch (error) {
+          throw new BadRequestException(`Could not read audio duration for: ${safeFileName}. Unrecognized or corrupt format.`);
+        }
+
+        if (usage.audioMinutesUsed + durationInMinutes > APP_LIMITS.MONTHLY_QUOTAS["FREE"].audioMinutes) {
+          return { status: "pro_needed" };
+        }
+        
+        await this.prisma.userUsageLimit.update({ 
+          where: { userId }, 
+          data: { audioMinutesUsed: { increment: durationInMinutes } } 
+        });
+      }
+
+      // 3. Image Limits
+      else if (file.mimetype.startsWith("image/")) {
+        if (usage.imageUsed + 1 > APP_LIMITS.MONTHLY_QUOTAS["FREE"].image) {
+          return { status: "pro_needed" };
+        }
+
+        await this.prisma.userUsageLimit.update({ 
+          where: { userId }, 
+          data: { imageUsed: { increment: 1 } } 
+        });
       }
     }
+    // --- END PRO GUARDS ---
 
+    // Proceed to upload only if limits checks passed and parsing didn't throw errors
     await this.s3.send(
       new PutObjectCommand({
         Bucket: this.bucketName,

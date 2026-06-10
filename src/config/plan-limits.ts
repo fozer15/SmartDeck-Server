@@ -26,12 +26,14 @@ export const APP_LIMITS = {
       audioMinutes: 30,
       aiCredits: 5,
       image: 20,
+      tutorChat: 20,
       textCharcter: 50000 // this is for "paste from notes" option
     },
     [PlanType.PRO]: {
       pdfPages: 1000,      // Higher limits for PRO users
       audioMinutes: 300,
       aiCredits: 100,
+      tutorChat:1000,
       image: 100,
       textCharacter:200000
     },

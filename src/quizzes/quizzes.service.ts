@@ -402,6 +402,7 @@ Guidelines:
        if(usage.aiCreditsUsed + 1 > APP_LIMITS.MONTHLY_QUOTAS["FREE"].aiCredits){
          throw new ForbiddenException('Free limit reached!')
        }
+    
     }
 
     if (dto.audioFileId) {
@@ -504,6 +505,8 @@ Guidelines:
           files: { select: { id: true, originalName: true, r2Key: true } },
         },
       });
+
+      await this.prisma.userUsageLimit.update({where:{userId},data:{aiCreditsUsed:{increment:1}}})
 
       return this.withDeckFilePublicUrls(createdDeck);
     } finally {
@@ -1859,8 +1862,18 @@ Guidelines:
     userText: string, // <-- Changed from array to a single text string
   ) {
     // 1. Find or create the conversation thread in the DB
+    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId,"SmartDeck Pro");
 
-    console.log("hererere");
+    if(!hasActiveEntitlement){
+      const usage = await this.prisma.userUsageLimit.findUnique({where:{
+         userId
+      }})
+
+      if(usage.tutorChatUsed + 1 > APP_LIMITS.MONTHLY_QUOTAS["FREE"].tutorChat){
+        throw new ForbiddenException('Free limit reached!')
+      }
+    }
+
     const conversation = await this.prisma.tutorConversation.upsert({
       where: { userId_quizId: { userId, quizId } },
       create: { userId, quizId },
