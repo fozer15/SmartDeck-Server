@@ -76,7 +76,7 @@ model GeneratedQuiz {
   
   // Deck Metadata & Marketplace Settings
   title       String          @default("Untitled Deck")
-  subject     Subject
+  subject     Subject?
   language    AppLanguage     @default(en)
   questionCount Int?
   questionTier  QuizTierPreference?

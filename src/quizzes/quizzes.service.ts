@@ -1889,6 +1889,10 @@ Guidelines:
       },
     });
 
+    await this.prisma.userUsageLimit.update({
+      where:{userId},data:{tutorChatUsed:{increment:1}}
+    })
+
     const generationLanguage = await this.getUserPreferredLanguage(userId);
 
     // 3. Fetch analytics (Your existing logic)

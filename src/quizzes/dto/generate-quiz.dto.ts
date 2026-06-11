@@ -6,9 +6,9 @@ export class GenerateQuizDto {
   @IsString()
   title!: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsEnum(Subject)
-  subject!: Subject;
+  subject?: Subject;
 
   @IsOptional()
   @IsArray()
