@@ -2,6 +2,7 @@ import { BadGatewayException, BadRequestException, Injectable, NotFoundException
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
 import { FilesService } from '../files/files.service';
+import { BillingService } from '../billing/billing.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import {AppLanguage} from '@prisma/client';
 import admin from "firebase-admin";
@@ -14,6 +15,7 @@ export class UsersService {
     private prisma: PrismaService,
     private env: EnvService,
     private filesService: FilesService,
+    private billing: BillingService,
   ) {
     this.appBaseUrl = env.appBaseUrl;
   }
@@ -126,19 +128,15 @@ export class UsersService {
 
 
   async findOne(id: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      include:{
-        usageLimit:{
-          select:{
-            aiCreditsUsed:true,
-            tutorChatUsed:true
-          }
-        },
-      }
-    });
+    const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
-    return this.withAvatarEndpointUrl(user);
+
+    const usageLimit = await this.billing.getCreditSummary(id).catch(() => null);
+
+    return this.withAvatarEndpointUrl({
+      ...user,
+      usageLimit,
+    });
   }
 
   async updateProfile(userId: string, data: { name?: string; preferredLanguage?: AppLanguage; school?: string; degree?: string }) {

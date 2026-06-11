@@ -5,8 +5,8 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } fro
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
 import { PDFDocument } from 'pdf-lib';
-import { RevenueCatService } from "../revenueCat/revenuecat.service";
-import { APP_LIMITS, PlanType } from "../config/plan-limits";
+import { BillingService } from '../billing/billing.service';
+import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
 import { parseBuffer } from 'music-metadata';
 
 @Injectable()
@@ -19,7 +19,7 @@ export class FilesService {
   constructor(
     private prisma: PrismaService,
     private env: EnvService,
-    private revenueCat: RevenueCatService
+    private billing: BillingService,
   ) {
     this.s3 = new S3Client({
       region: 'auto',
@@ -36,86 +36,20 @@ export class FilesService {
   async upload(userId: string, file: Express.Multer.File) {
     const safeFileName = this.toStorageSafeFileName(file.originalname);
     const r2Key = `uploads/${userId}/files/${Date.now()}-${safeFileName}`;
-    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId, "SmartDeck Pro");
-    
-    // --- PRO GUARDS ---
-    if (!hasActiveEntitlement) {
-      // Fetch usage once for all file types
-      const usage = await this.prisma.userUsageLimit.findUnique({
-        where: { userId }
-      });
+    const uploadCreditCost = await this.calculateUploadCreditCost(file, safeFileName);
 
-      if (!usage) {
-        throw new NotFoundException('User usage records not found.');
-      }
-
-      // 1. PDF Limits
-      if (file.mimetype === 'application/pdf') {
-        if (usage.pdfPagesUsed >= APP_LIMITS.MONTHLY_QUOTAS["FREE"].pdfPages) {
-          return { status: "pro_needed" };
-        }
-
-        let pageCount = 0;
-        try {
-          const pdfDoc = await PDFDocument.load(file.buffer);
-          pageCount = pdfDoc.getPageCount();
-        } catch (error) {
-          // Catching pdf-lib errors specifically so we can reject the upload entirely
-          throw new BadRequestException(`Could not parse PDF file: ${safeFileName}. The file may be corrupt.`);
-        }
-
-        if (usage.pdfPagesUsed + pageCount > APP_LIMITS.MONTHLY_QUOTAS["FREE"].pdfPages) {
-          return { status: "pro_needed" };
-        }
-
-        await this.prisma.userUsageLimit.update({ 
-          where: { userId }, 
-          data: { pdfPagesUsed: { increment: pageCount } } 
-        });
-      }
-
-      // 2. Audio Limits
-      else if (file.mimetype.startsWith('audio/')) {
-        if (usage.audioMinutesUsed >= APP_LIMITS.MONTHLY_QUOTAS["FREE"].audioMinutes) {
-          return { status: "pro_needed" };
-        }
-
-        let durationInMinutes = 0;
-        try {
-          const metadata = await parseBuffer(file.buffer, { mimeType: file.mimetype });
-          if (!metadata.format.duration) {
-             throw new Error('No duration found');
-          }
-          durationInMinutes = Number((metadata.format.duration / 60).toFixed(2));
-        } catch (error) {
-          throw new BadRequestException(`Could not read audio duration for: ${safeFileName}. Unrecognized or corrupt format.`);
-        }
-
-        if (usage.audioMinutesUsed + durationInMinutes > APP_LIMITS.MONTHLY_QUOTAS["FREE"].audioMinutes) {
-          return { status: "pro_needed" };
-        }
-        
-        await this.prisma.userUsageLimit.update({ 
-          where: { userId }, 
-          data: { audioMinutesUsed: { increment: durationInMinutes } } 
-        });
-      }
-
-      // 3. Image Limits
-      else if (file.mimetype.startsWith("image/")) {
-        if (usage.imageUsed + 1 > APP_LIMITS.MONTHLY_QUOTAS["FREE"].image) {
-          return { status: "pro_needed" };
-        }
-
-        await this.prisma.userUsageLimit.update({ 
-          where: { userId }, 
-          data: { imageUsed: { increment: 1 } } 
-        });
+    if (uploadCreditCost > 0) {
+      const affordability = await this.billing.canAffordCredits(userId, uploadCreditCost);
+      if (!affordability.canAfford) {
+        return {
+          status: 'credits_needed',
+          requiredCredits: uploadCreditCost,
+          remainingCredits: affordability.remainingCredits,
+          monthlyCredits: affordability.monthlyCredits,
+        };
       }
     }
-    // --- END PRO GUARDS ---
 
-    // Proceed to upload only if limits checks passed and parsing didn't throw errors
     await this.s3.send(
       new PutObjectCommand({
         Bucket: this.bucketName,
@@ -135,7 +69,47 @@ export class FilesService {
       },
     });
 
+    if (uploadCreditCost > 0) {
+      try {
+        await this.billing.consumeCredits(userId, uploadCreditCost, 'File upload');
+      } catch (error) {
+        await this.deleteFile(createdFile.id).catch(() => {});
+        throw error;
+      }
+    }
+
     return createdFile;
+  }
+
+  private async calculateUploadCreditCost(file: Express.Multer.File, safeFileName: string): Promise<number> {
+    if (file.mimetype === 'application/pdf') {
+      try {
+        const pdfDoc = await PDFDocument.load(file.buffer);
+        return calculateCreditsForUnits(CreditCostType.PDF_PAGE, pdfDoc.getPageCount());
+      } catch (error) {
+        throw new BadRequestException(`Could not parse PDF file: ${safeFileName}. The file may be corrupt.`);
+      }
+    }
+
+    if (file.mimetype.startsWith('audio/')) {
+      try {
+        const metadata = await parseBuffer(file.buffer, { mimeType: file.mimetype });
+        if (!metadata.format.duration) {
+          throw new Error('No duration found');
+        }
+
+        const durationInMinutes = Math.max(1, Math.ceil(metadata.format.duration / 60));
+        return calculateCreditsForUnits(CreditCostType.AUDIO_MINUTE, durationInMinutes);
+      } catch (error) {
+        throw new BadRequestException(`Could not read audio duration for: ${safeFileName}. Unrecognized or corrupt format.`);
+      }
+    }
+
+    if (file.mimetype.startsWith('image/')) {
+      return calculateCreditsForUnits(CreditCostType.IMAGE_UPLOAD, 1);
+    }
+
+    return 0;
   }
 
   async uploadAvatar(userId: string, file: Express.Multer.File) {

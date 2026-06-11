@@ -1,54 +1,78 @@
-// src/config/limits.ts
-
-// Define our subscription plans
 export enum PlanType {
   FREE = 'FREE',
   PRO = 'PRO',
-  // Future plans such as 'ENTERPRISE' or 'STUDENT' can be added here
 }
 
-// Application-wide limit rules (Single Source of Truth)
+export enum CreditCostType {
+  PDF_PAGE = 'PDF_PAGE',
+  AUDIO_MINUTE = 'AUDIO_MINUTE',
+  IMAGE_UPLOAD = 'IMAGE_UPLOAD',
+  QUIZ_GENERATION = 'QUIZ_GENERATION',
+  TUTOR_CHAT_MESSAGE = 'TUTOR_CHAT_MESSAGE',
+  TEXT_CHARACTERS = 'TEXT_CHARACTERS',
+}
+
+type CreditFactor = {
+  credits: number;
+  unitSize: number;
+  minimumCharge?: number;
+};
+
 export const APP_LIMITS = {
-  
-  // 1. SECURITY AND API LIMITS
-  // System-wide limits independent of user subscription plans
-  SYSTEM: {
-    MAX_PASTE_CHARACTERS_PER_REQUEST: 10000, // Maximum characters allowed per text paste
-    MAX_PDF_FILE_SIZE_MB: 15,                // Maximum PDF file size
-    MAX_AUDIO_FILE_SIZE_MB: 25,             // Maximum audio file size
-    AI_CREDIT_COST_PER_TEXT_PASTE: 1,       // AI credit cost per text paste operation
+  SUBSCRIPTIONS: {
+    PRO_ENTITLEMENT_ID: 'SmartDeck Pro',
   },
+  SYSTEM: {
+    MAX_PASTE_CHARACTERS_PER_REQUEST: 10000,
+    MAX_PDF_FILE_SIZE_MB: 15,
+    MAX_AUDIO_FILE_SIZE_MB: 25,
+  },
+  MONTHLY_CREDITS: {
+    [PlanType.FREE]: 250,
+    [PlanType.PRO]: 2500,
+  },
+  CREDIT_FACTORS: {
+    [CreditCostType.PDF_PAGE]: { credits: 1, unitSize: 2, minimumCharge: 1 },
+    [CreditCostType.AUDIO_MINUTE]: { credits: 2, unitSize: 1, minimumCharge: 2 },
+    [CreditCostType.IMAGE_UPLOAD]: { credits: 8, unitSize: 1, minimumCharge: 8 },
+    [CreditCostType.QUIZ_GENERATION]: { credits: 15, unitSize: 1, minimumCharge: 15 },
+    [CreditCostType.TUTOR_CHAT_MESSAGE]: { credits: 3, unitSize: 1, minimumCharge: 3 },
+    [CreditCostType.TEXT_CHARACTERS]: { credits: 1, unitSize: 2000, minimumCharge: 1 },
+  } satisfies Record<CreditCostType, CreditFactor>,
+} as const;
 
-  // 2. MONTHLY USAGE QUOTAS (Plan-based)
-  MONTHLY_QUOTAS: {
-    [PlanType.FREE]: {
-      pdfPages: 100,
-      audioMinutes: 30,
-      aiCredits: 5,
-      image: 20,
-      tutorChat: 20,
-      textCharcter: 50000 // this is for "paste from notes" option
-    },
-    [PlanType.PRO]: {
-      pdfPages: 1000,      // Higher limits for PRO users
-      audioMinutes: 300,
-      aiCredits: 100,
-      tutorChat:1000,
-      image: 100,
-      textCharacter:200000
-    },
-  }
-} as const; // Makes values immutable (readonly) in TypeScript
-
-// 3. HELPER FUNCTIONS
-// Simplifies limit retrieval in the backend
-export const getLimitsForPlan = (
-  plan: PlanType | string | null | undefined
-) => {
-  // Fallback to FREE if the plan is undefined or invalid
-  const validPlan = Object.values(PlanType).includes(plan as PlanType)
+export const normalizePlanType = (
+  plan: PlanType | string | null | undefined,
+): PlanType => {
+  return Object.values(PlanType).includes(plan as PlanType)
     ? (plan as PlanType)
     : PlanType.FREE;
+};
 
-  return APP_LIMITS.MONTHLY_QUOTAS[validPlan];
+export const getMonthlyCreditsForPlan = (
+  plan: PlanType | string | null | undefined,
+): number => {
+  return APP_LIMITS.MONTHLY_CREDITS[normalizePlanType(plan)];
+};
+
+export const calculateCreditsForUnits = (
+  type: CreditCostType,
+  units: number,
+): number => {
+  if (!Number.isFinite(units) || units <= 0) {
+    return 0;
+  }
+
+  const factor = APP_LIMITS.CREDIT_FACTORS[type];
+  const billedUnits = Math.ceil(units / factor.unitSize);
+  const rawCredits = billedUnits * factor.credits;
+
+  return Math.max(factor.minimumCharge ?? 0, rawCredits);
+};
+
+export const getRemainingCredits = (
+  monthlyCredits: number,
+  creditsUsed: number,
+): number => {
+  return Math.max(monthlyCredits - creditsUsed, 0);
 };

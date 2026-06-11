@@ -2,9 +2,9 @@ import { Injectable, BadRequestException, ForbiddenException, NotFoundException 
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FilesService } from '../files/files.service';
+import { BillingService } from '../billing/billing.service';
 import { EnvService } from '../env/env.service';
 import { GeminiService } from '../env/gemini.service';
-import {RevenueCatService} from "../revenueCat/revenuecat.service"
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import { quizResponseSchema } from './schemas/quiz.schema';
@@ -15,7 +15,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { PDFDocument } from 'pdf-lib';
 import {AppLanguage} from '@prisma/client'
-import {APP_LIMITS, PlanType} from "../config/plan-limits"
+import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
 
 const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
   en: 'English',
@@ -98,9 +98,9 @@ Guidelines:
   constructor(
     private prisma: PrismaService,
     private filesService: FilesService,
+    private billing: BillingService,
     private env: EnvService,
     private gemini: GeminiService,
-    private revenueCat: RevenueCatService
   ) {
     this.appBaseUrl = env.appBaseUrl;
   }
@@ -391,28 +391,38 @@ Guidelines:
   }
 
   async generate(userId: string, dto: GenerateQuizDto) {
+    const generationCreditCost = this.getQuizGenerationCreditCost(dto);
+    const affordability = await this.billing.canAffordCredits(userId, generationCreditCost);
 
-    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId,"SmartDeck Pro");
-    
-    if(!hasActiveEntitlement){
-       const usage = await this.prisma.userUsageLimit.findUnique({where:{
-          userId
-       }})
-
-       if(usage.aiCreditsUsed + 1 > APP_LIMITS.MONTHLY_QUOTAS["FREE"].aiCredits){
-         throw new ForbiddenException('Free limit reached!')
-       }
-    
+    if (!affordability.canAfford) {
+      throw new ForbiddenException(
+        `Quiz generation requires ${generationCreditCost} credits, but only ${affordability.remainingCredits} credits remain this month.`,
+      );
     }
+
+    let createdDeck: any;
 
     if (dto.audioFileId) {
-      return this.generateFromAudio(userId, dto);
+      createdDeck = await this.generateFromAudio(userId, dto);
+    } else if (dto.text && dto.text.trim().length > 0) {
+      createdDeck = await this.generateFromText(userId, dto);
+    } else {
+      createdDeck = await this.generateFromFiles(userId, dto);
     }
 
-    if (dto.text && dto.text.trim().length > 0) {
-      return this.generateFromText(userId, dto);
+    try {
+      await this.billing.consumeCredits(userId, generationCreditCost, 'Quiz generation');
+    } catch (error) {
+      if (createdDeck?.id) {
+        await this.prisma.generatedQuiz.delete({ where: { id: createdDeck.id } }).catch(() => {});
+      }
+      throw error;
     }
 
+    return createdDeck;
+  }
+
+  private async generateFromFiles(userId: string, dto: GenerateQuizDto) {
     if (!dto.fileIds || dto.fileIds.length === 0) {
       throw new BadRequestException('Either fileIds, audioFileId, or text is required');
     }
@@ -505,8 +515,6 @@ Guidelines:
           files: { select: { id: true, originalName: true, r2Key: true } },
         },
       });
-
-      await this.prisma.userUsageLimit.update({where:{userId},data:{aiCreditsUsed:{increment:1}}})
 
       return this.withDeckFilePublicUrls(createdDeck);
     } finally {
@@ -673,6 +681,17 @@ Guidelines:
     });
 
     return this.withDeckFilePublicUrls(createdDeck);
+  }
+
+  private getQuizGenerationCreditCost(dto: GenerateQuizDto): number {
+    let totalCredits = calculateCreditsForUnits(CreditCostType.QUIZ_GENERATION, 1);
+
+    const sourceText = dto.text?.trim();
+    if (sourceText) {
+      totalCredits += calculateCreditsForUnits(CreditCostType.TEXT_CHARACTERS, sourceText.length);
+    }
+
+    return totalCredits;
   }
 
   private buildPrompt(dto: GenerateQuizDto, language: AppLanguage = 'en') {
@@ -1861,18 +1880,16 @@ Guidelines:
     quizId: string,
     userText: string, // <-- Changed from array to a single text string
   ) {
-    // 1. Find or create the conversation thread in the DB
-    const hasActiveEntitlement = await this.revenueCat.hasActiveEntitlement(userId,"SmartDeck Pro");
+    const tutorChatCreditCost = calculateCreditsForUnits(CreditCostType.TUTOR_CHAT_MESSAGE, 1);
+    const affordability = await this.billing.canAffordCredits(userId, tutorChatCreditCost);
 
-    if(!hasActiveEntitlement){
-      const usage = await this.prisma.userUsageLimit.findUnique({where:{
-         userId
-      }})
-
-      if(usage.tutorChatUsed + 1 > APP_LIMITS.MONTHLY_QUOTAS["FREE"].tutorChat){
-        throw new ForbiddenException('Free limit reached!')
-      }
+    if (!affordability.canAfford) {
+      throw new ForbiddenException(
+        `Tutor chat requires ${tutorChatCreditCost} credits, but only ${affordability.remainingCredits} credits remain this month.`,
+      );
     }
+
+    // 1. Find or create the conversation thread in the DB
 
     const conversation = await this.prisma.tutorConversation.upsert({
       where: { userId_quizId: { userId, quizId } },
@@ -1888,10 +1905,6 @@ Guidelines:
         text: userText,
       },
     });
-
-    await this.prisma.userUsageLimit.update({
-      where:{userId},data:{tutorChatUsed:{increment:1}}
-    })
 
     const generationLanguage = await this.getUserPreferredLanguage(userId);
 
@@ -1969,6 +1982,8 @@ Guidelines:
         text: aiReplyText,
       },
     });
+
+    await this.billing.consumeCredits(userId, tutorChatCreditCost, 'Tutor chat');
 
     return { reply: aiReplyText };
     }}
