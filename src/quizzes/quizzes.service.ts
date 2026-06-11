@@ -395,9 +395,12 @@ Guidelines:
     const affordability = await this.billing.canAffordCredits(userId, generationCreditCost);
 
     if (!affordability.canAfford) {
-      throw new ForbiddenException(
-        `Quiz generation requires ${generationCreditCost} credits, but only ${affordability.remainingCredits} credits remain this month.`,
-      );
+       return {
+          status: 'credits_needed',
+          requiredCredits: generationCreditCost,
+          remainingCredits: affordability.remainingCredits,
+          monthlyCredits: affordability.monthlyCredits,
+        };
     }
 
     let createdDeck: any;
@@ -1884,9 +1887,12 @@ Guidelines:
     const affordability = await this.billing.canAffordCredits(userId, tutorChatCreditCost);
 
     if (!affordability.canAfford) {
-      throw new ForbiddenException(
-        `Tutor chat requires ${tutorChatCreditCost} credits, but only ${affordability.remainingCredits} credits remain this month.`,
-      );
+       return {
+          status: 'credits_needed',
+          requiredCredits: tutorChatCreditCost,
+          remainingCredits: affordability.remainingCredits,
+          monthlyCredits: affordability.monthlyCredits,
+        };
     }
 
     // 1. Find or create the conversation thread in the DB
