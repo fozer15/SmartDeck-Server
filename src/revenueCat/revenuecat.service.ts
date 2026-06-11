@@ -33,7 +33,7 @@ export class RevenueCatService {
           'Accept': 'application/json',
         },
       });
-
+     
       if (!response.ok) {
         this.logger.error(`RevenueCat API error: ${response.status} ${response.statusText}`);
         return false;
@@ -41,9 +41,8 @@ export class RevenueCatService {
 
       const data = await response.json();
       
-     
       // Navigate the response safely to find active entitlements
-      const activeEntitlements = data?.subscriber?.entitlements?.active;
+      const activeEntitlements = data?.subscriber?.entitlements;
 
       // If the specific entitlement exists in the 'active' object, return true
       if (activeEntitlements && activeEntitlements[entitlementId]) {
