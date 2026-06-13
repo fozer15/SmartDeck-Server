@@ -39,7 +39,7 @@ export class UsersService {
         } as any,
       });
 
-      return this.withAvatarEndpointUrl(updatedUser);
+      return this.withUserCreditSummary(updatedUser);
     }
 
     // Create new user with Firebase UID as ID
@@ -62,7 +62,7 @@ export class UsersService {
       }
     })
     
-    return this.withAvatarEndpointUrl(createdUser);
+    return this.withUserCreditSummary(createdUser);
   }
 
   async searchByName(viewerId: string, query: string) {
@@ -131,12 +131,7 @@ export class UsersService {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
 
-    const usageLimit = await this.billing.getCreditSummary(id).catch(() => null);
-
-    return this.withAvatarEndpointUrl({
-      ...user,
-      usageLimit,
-    });
+    return this.withUserCreditSummary(user);
   }
 
   async updateProfile(userId: string, data: { name?: string; preferredLanguage?: AppLanguage; school?: string; degree?: string }) {
@@ -387,11 +382,20 @@ export class UsersService {
     return this.filesService.getObjectBuffer(user.avatarUrl);
   }
 
-  private withAvatarEndpointUrl<T extends { id: string; avatarUrl: string | null }>(user: T): T {
+  private withAvatarEndpointUrl<T extends { id: string; avatarUrl?: string | null }>(user: T): T {
     return {
       ...user,
       avatarUrl: this.toAvatarUrl(user.id, user.avatarUrl),
     };
+  }
+
+  private async withUserCreditSummary<T extends { id: string; avatarUrl?: string | null }>(user: T) {
+    const usageLimit = await this.billing.getCreditSummary(user.id).catch(() => null);
+
+    return this.withAvatarEndpointUrl({
+      ...user,
+      usageLimit,
+    });
   }
 
   private toAvatarUrl(userId: string, value?: string | null) {
