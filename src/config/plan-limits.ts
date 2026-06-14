@@ -31,6 +31,13 @@ export const APP_LIMITS = {
     [PlanType.FREE]: 250,
     [PlanType.PRO]: 2500,
   },
+  QUIZ_GENERATION: {
+    MIN_QUESTIONS_PER_DECK: 1,
+    MAX_QUESTIONS_PER_DECK: {
+      [PlanType.FREE]: 50,
+      [PlanType.PRO]: 100,
+    },
+  },
   CREDIT_FACTORS: {
     [CreditCostType.PDF_PAGE]: { credits: 1, unitSize: 2, minimumCharge: 1 },
     [CreditCostType.AUDIO_MINUTE]: { credits: 2, unitSize: 1, minimumCharge: 2 },
@@ -53,6 +60,12 @@ export const getMonthlyCreditsForPlan = (
   plan: PlanType | string | null | undefined,
 ): number => {
   return APP_LIMITS.MONTHLY_CREDITS[normalizePlanType(plan)];
+};
+
+export const getMaxQuestionsPerDeckForPlan = (
+  plan: PlanType | string | null | undefined,
+): number => {
+  return APP_LIMITS.QUIZ_GENERATION.MAX_QUESTIONS_PER_DECK[normalizePlanType(plan)];
 };
 
 export const calculateCreditsForUnits = (

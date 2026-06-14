@@ -1,5 +1,6 @@
 import { Subject, QuizTierPreference, QuizFormatPreference } from '@prisma/client';
 import { IsString, IsOptional, IsArray, IsEnum, IsInt, Min, Max, IsNotEmpty, IsObject, MaxLength, MinLength } from 'class-validator';
+import { APP_LIMITS, PlanType } from '../../config/plan-limits';
 
 export class GenerateQuizDto {
   @IsNotEmpty()
@@ -33,8 +34,8 @@ export class GenerateQuizDto {
 
   @IsOptional()
   @IsInt()
-  @Min(1)
-  @Max(50)
+  @Min(APP_LIMITS.QUIZ_GENERATION.MIN_QUESTIONS_PER_DECK)
+  @Max(APP_LIMITS.QUIZ_GENERATION.MAX_QUESTIONS_PER_DECK[PlanType.PRO])
   questionCount?: number;
 
   @IsOptional()

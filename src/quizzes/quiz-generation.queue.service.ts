@@ -29,7 +29,7 @@ export class QuizGenerationQueueService implements OnModuleDestroy {
     this.queue = new Queue<QuizGenerationQueueData>(QUIZ_GENERATION_QUEUE_NAME, {
       connection: this.connection,
       defaultJobOptions: {
-        attempts: 1,
+        attempts: 2,
         removeOnComplete: 1000,
         removeOnFail: 1000,
       },

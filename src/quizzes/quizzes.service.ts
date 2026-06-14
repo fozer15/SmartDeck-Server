@@ -15,7 +15,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { PDFDocument } from 'pdf-lib';
 import { AppLanguage, QuizGenerationJobStatus, QuizGenerationSourceType } from '@prisma/client'
-import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
+import { CreditCostType, calculateCreditsForUnits, getMaxQuestionsPerDeckForPlan } from '../config/plan-limits';
 import { QuizGenerationQueueService } from './quiz-generation.queue.service';
 
 const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
@@ -476,9 +476,23 @@ Guidelines:
     };
   }
 
+  private assertQuestionCountWithinPlanLimit(questionCount: number | undefined, plan: string) {
+    if (!questionCount) {
+      return;
+    }
+
+    const maxQuestionCount = getMaxQuestionsPerDeckForPlan(plan);
+
+    if (questionCount > maxQuestionCount) {
+      throw new BadRequestException(`Your current plan allows up to ${maxQuestionCount} questions per deck.`);
+    }
+  }
+
   async generate(userId: string, dto: GenerateQuizDto) {
     const generationCreditCost = this.getQuizGenerationCreditCost(dto);
     const affordability = await this.billing.canAffordCredits(userId, generationCreditCost);
+
+    this.assertQuestionCountWithinPlanLimit(dto.questionCount, affordability.plan);
 
     if (!affordability.canAfford) {
        return {
@@ -506,6 +520,8 @@ Guidelines:
   async enqueueGeneration(userId: string, dto: GenerateQuizDto) {
     const generationCreditCost = this.getQuizGenerationCreditCost(dto);
     const affordability = await this.billing.canAffordCredits(userId, generationCreditCost);
+
+    this.assertQuestionCountWithinPlanLimit(dto.questionCount, affordability.plan);
 
     if (!affordability.canAfford) {
       return {
