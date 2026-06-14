@@ -17,6 +17,8 @@ export class EnvService {
   readonly r2PublicUrl: string;
   readonly appBaseUrl: string;
   readonly revenueCatApiKey: string;
+  readonly redisUrl: string;
+  readonly quizGenerationWorkerConcurrency: number;
 
   constructor(config: ConfigService) {
     this.firebaseProjectId = config.getOrThrow('FIREBASE_PROJECT_ID');
@@ -31,5 +33,11 @@ export class EnvService {
     this.r2PublicUrl = config.getOrThrow<string>('R2_PUBLIC_URL').replace(/\/$/, '');
     this.appBaseUrl = (config.get<string>('APP_BASE_URL') || 'http://localhost:3000').replace(/\/$/, '');
     this.revenueCatApiKey = config.getOrThrow('RC_API_KEY');
+    this.redisUrl = config.get<string>('REDIS_URL') || 'redis://127.0.0.1:6379';
+
+    const configuredConcurrency = Number(config.get<string>('QUIZ_GENERATION_WORKER_CONCURRENCY') || 2);
+    this.quizGenerationWorkerConcurrency = Number.isFinite(configuredConcurrency) && configuredConcurrency > 0
+      ? Math.floor(configuredConcurrency)
+      : 2;
   }
 }

@@ -49,6 +49,12 @@ export class UsersController {
     return this.usersService.updateProfile(req.user.uid, body);
   }
 
+  @Post('me/credits/refill')
+  @UseGuards(AuthGuard)
+  refillCredits(@Req() req: any) {
+    return this.usersService.refillCredits(req.user.uid);
+  }
+
   @Get(':id/public-profile')
   @UseGuards(AuthGuard)
   getPublicProfile(@Param('id') id: string, @Req() req: any) {

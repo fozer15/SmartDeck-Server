@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FilesService } from '../files/files.service';
@@ -14,8 +14,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { PDFDocument } from 'pdf-lib';
-import {AppLanguage} from '@prisma/client'
+import { AppLanguage, QuizGenerationJobStatus, QuizGenerationSourceType } from '@prisma/client'
 import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
+import { QuizGenerationQueueService } from './quiz-generation.queue.service';
 
 const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
   en: 'English',
@@ -66,8 +67,11 @@ const shortAnswerEvaluationSchema = z.object({
   feedback: z.string().min(1).max(1200),
 });
 
+type GenerateQuizJobPayload = GenerateQuizDto;
+
 @Injectable()
 export class QuizzesService {
+  private readonly logger = new Logger(QuizzesService.name);
   private appBaseUrl: string;
   private readonly processedAttempts = new Map<string, number>();
   private readonly processedAttemptTtlMs = 30 * 60 * 1000;
@@ -101,8 +105,90 @@ Guidelines:
     private billing: BillingService,
     private env: EnvService,
     private gemini: GeminiService,
+    private generationQueue: QuizGenerationQueueService,
   ) {
     this.appBaseUrl = env.appBaseUrl;
+  }
+
+  private mapGenerationJob(job: {
+    id: string;
+    status: QuizGenerationJobStatus;
+    sourceType: QuizGenerationSourceType;
+    payload: Prisma.JsonValue;
+    title?: string | null;
+    estimatedCredits: number;
+    resultQuizId?: string | null;
+    errorMessage?: string | null;
+    attempts: number;
+    startedAt?: Date | null;
+    completedAt?: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    const payload = this.parseGenerationJobPayload(job.payload);
+
+    return {
+      id: job.id,
+      status: job.status,
+      sourceType: job.sourceType,
+      title: job.title || 'Untitled deck',
+      subject: payload.subject || null,
+      questionCount: payload.questionCount || null,
+      questionTier: payload.questionTier || 'mixed',
+      questionFormat: payload.questionFormat || 'mixed',
+      estimatedCredits: job.estimatedCredits,
+      resultQuizId: job.resultQuizId,
+      errorMessage: job.errorMessage,
+      attempts: job.attempts,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+    };
+  }
+
+  private getGenerationSourceType(dto: GenerateQuizDto): QuizGenerationSourceType {
+    if (dto.audioFileId) {
+      return QuizGenerationSourceType.audio;
+    }
+
+    if (dto.text && dto.text.trim().length > 0) {
+      return QuizGenerationSourceType.text;
+    }
+
+    return QuizGenerationSourceType.files;
+  }
+
+  private buildGenerationJobPayload(dto: GenerateQuizDto): Prisma.InputJsonValue {
+    return JSON.parse(JSON.stringify(dto ?? {})) as Prisma.InputJsonValue;
+  }
+
+  private parseGenerationJobPayload(payload: Prisma.JsonValue): GenerateQuizJobPayload {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new InternalServerErrorException('Generation job payload is invalid.');
+    }
+
+    return payload as unknown as GenerateQuizJobPayload;
+  }
+
+  private getGenerationErrorMessage(error: unknown) {
+    if (error instanceof Error && error.message) {
+      return error.message.slice(0, 1000);
+    }
+
+    return 'Generation failed.';
+  }
+
+  private async buildDeckFromSource(userId: string, dto: GenerateQuizDto) {
+    if (dto.audioFileId) {
+      return this.generateFromAudio(userId, dto);
+    }
+
+    if (dto.text && dto.text.trim().length > 0) {
+      return this.generateFromText(userId, dto);
+    }
+
+    return this.generateFromFiles(userId, dto);
   }
 
   private toAvatarUrl(userId?: string | null, value?: string | null) {
@@ -403,15 +489,7 @@ Guidelines:
         };
     }
 
-    let createdDeck: any;
-
-    if (dto.audioFileId) {
-      createdDeck = await this.generateFromAudio(userId, dto);
-    } else if (dto.text && dto.text.trim().length > 0) {
-      createdDeck = await this.generateFromText(userId, dto);
-    } else {
-      createdDeck = await this.generateFromFiles(userId, dto);
-    }
+    const createdDeck = await this.buildDeckFromSource(userId, dto);
 
     try {
       await this.billing.consumeCredits(userId, generationCreditCost, 'Quiz generation');
@@ -423,6 +501,140 @@ Guidelines:
     }
 
     return createdDeck;
+  }
+
+  async enqueueGeneration(userId: string, dto: GenerateQuizDto) {
+    const generationCreditCost = this.getQuizGenerationCreditCost(dto);
+    const affordability = await this.billing.canAffordCredits(userId, generationCreditCost);
+
+    if (!affordability.canAfford) {
+      return {
+        status: 'credits_needed',
+        requiredCredits: generationCreditCost,
+        remainingCredits: affordability.remainingCredits,
+        monthlyCredits: affordability.monthlyCredits,
+      };
+    }
+
+    const createdJob = await this.prisma.quizGenerationJob.create({
+      data: {
+        userId,
+        status: QuizGenerationJobStatus.queued,
+        sourceType: this.getGenerationSourceType(dto),
+        payload: this.buildGenerationJobPayload(dto),
+        title: dto.title?.trim() || null,
+        estimatedCredits: generationCreditCost,
+      },
+    });
+
+    try {
+      await this.generationQueue.enqueueGenerationJob(createdJob.id);
+    } catch (error) {
+      await this.prisma.quizGenerationJob.update({
+        where: { id: createdJob.id },
+        data: {
+          status: QuizGenerationJobStatus.failed,
+          errorMessage: this.getGenerationErrorMessage(error),
+          completedAt: new Date(),
+          attempts: 1,
+        },
+      }).catch(() => {});
+
+      throw new InternalServerErrorException('Could not queue quiz generation.');
+    }
+
+    return this.mapGenerationJob(createdJob);
+  }
+
+  async listGenerationJobs(userId: string) {
+    const jobs = await this.prisma.quizGenerationJob.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+
+    return jobs.map((job) => this.mapGenerationJob(job));
+  }
+
+  async getGenerationJob(userId: string, jobId: string) {
+    const job = await this.prisma.quizGenerationJob.findFirst({
+      where: { id: jobId, userId },
+    });
+
+    if (!job) {
+      throw new NotFoundException('Generation job not found');
+    }
+
+    return this.mapGenerationJob(job);
+  }
+
+  async processGenerationJob(jobId: string) {
+    const transition = await this.prisma.quizGenerationJob.updateMany({
+      where: {
+        id: jobId,
+        status: QuizGenerationJobStatus.queued,
+      },
+      data: {
+        status: QuizGenerationJobStatus.processing,
+        startedAt: new Date(),
+        attempts: {
+          increment: 1,
+        },
+        errorMessage: null,
+        completedAt: null,
+      },
+    });
+
+    if (transition.count === 0) {
+      return;
+    }
+
+    const job = await this.prisma.quizGenerationJob.findUnique({
+      where: { id: jobId },
+    });
+
+    if (!job) {
+      throw new NotFoundException('Generation job not found');
+    }
+
+    const dto = this.parseGenerationJobPayload(job.payload);
+
+    try {
+      const createdDeck = await this.buildDeckFromSource(job.userId, dto);
+
+      try {
+        await this.billing.consumeCredits(job.userId, job.estimatedCredits, 'Quiz generation');
+      } catch (error) {
+        if (createdDeck?.id) {
+          await this.prisma.generatedQuiz.delete({ where: { id: createdDeck.id } }).catch(() => {});
+        }
+        throw error;
+      }
+
+      await this.prisma.quizGenerationJob.update({
+        where: { id: job.id },
+        data: {
+          status: QuizGenerationJobStatus.completed,
+          resultQuizId: createdDeck.id,
+          completedAt: new Date(),
+          errorMessage: null,
+        },
+      });
+    } catch (error) {
+      const message = this.getGenerationErrorMessage(error);
+      this.logger.error(`Quiz generation job ${job.id} failed: ${message}`);
+
+      await this.prisma.quizGenerationJob.update({
+        where: { id: job.id },
+        data: {
+          status: QuizGenerationJobStatus.failed,
+          errorMessage: message,
+          completedAt: new Date(),
+        },
+      }).catch(() => {});
+
+      throw error;
+    }
   }
 
   private async generateFromFiles(userId: string, dto: GenerateQuizDto) {
@@ -1957,12 +2169,12 @@ Guidelines:
     // 5. Fetch chat history from the DB (Limits to last 20 messages for context size)
     const recentMessages = await this.prisma.tutorMessage.findMany({
       where: { conversationId: conversation.id },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: 'desc' },
       take: 20, 
     });
 
     // 6. Map DB history to Gemini format (Your existing mapping)
-    const contents = recentMessages.map((m) => ({
+    const contents = recentMessages.reverse().map((m) => ({
       role: m.role === 'assistant' ? 'model' : 'user', // Adjusted to match your DB enum -> Gemini
       parts: [{ text: m.text }],
     }));
@@ -1978,8 +2190,12 @@ Guidelines:
       },
     });
 
-    const aiReplyText = response.text;
+    const aiReplyText = String(response.text || '').trim();
 
+    if (!aiReplyText) {
+      throw new InternalServerErrorException('Tutor AI returned an empty response.');
+    }
+    
     // 8. Save the AI's response back to the DB
     await this.prisma.tutorMessage.create({
       data: {

@@ -32,6 +32,7 @@ model User {
   following     UserFollow[]    @relation("UserFollowing")
   followers     UserFollow[]    @relation("UserFollowers")
   usageLimit      UserUsageLimit?
+  generationJobs QuizGenerationJob[]
 }
 
 model UserUsageLimit {
@@ -91,6 +92,28 @@ model GeneratedQuiz {
   tutorConversations TutorConversation[] 
 }
 
+model QuizGenerationJob {
+  id               String                   @id @default(cuid())
+  userId           String
+  user             User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status           QuizGenerationJobStatus  @default(queued)
+  sourceType       QuizGenerationSourceType
+  payload          Json
+  title            String?
+  estimatedCredits Int
+  resultQuizId     String?
+  errorMessage     String?
+  attempts         Int                      @default(0)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
 model TutorConversation {
   id        String         @id @default(cuid())
   userId    String
@@ -116,6 +139,20 @@ enum TutorRole {
   user
   assistant
   system
+}
+
+enum QuizGenerationJobStatus {
+  queued
+  processing
+  completed
+  failed
+  cancelled
+}
+
+enum QuizGenerationSourceType {
+  files
+  audio
+  text
 }
 
 model TutorMessage {

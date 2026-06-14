@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Param, Body, UseGuards, Req, Delete, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Post, Patch, Param, Body, UseGuards, Req, Delete, Query } from '@nestjs/common';
 import { QuizzesService } from './quizzes.service';
 import { GenerateQuizDto } from './dto/generate-quiz.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -12,6 +12,21 @@ export class QuizzesController {
   @Post('generate')
   generate(@Req() req: any, @Body() dto: GenerateQuizDto) {
     return this.quizzesService.generate(req.user.uid, dto);
+  }
+
+  @Post('generation-jobs')
+  enqueueGeneration(@Req() req: any, @Body() dto: GenerateQuizDto) {
+    return this.quizzesService.enqueueGeneration(req.user.uid, dto);
+  }
+
+  @Get('generation-jobs')
+  listGenerationJobs(@Req() req: any) {
+    return this.quizzesService.listGenerationJobs(req.user.uid);
+  }
+
+  @Get('generation-jobs/:jobId')
+  getGenerationJob(@Param('jobId') jobId: string, @Req() req: any) {
+    return this.quizzesService.getGenerationJob(req.user.uid, jobId);
   }
 
   @Post(':quizId/play')

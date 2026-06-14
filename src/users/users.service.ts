@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
 import { FilesService } from '../files/files.service';
@@ -130,6 +130,32 @@ export class UsersService {
   async findOne(id: string) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
+
+    return this.withUserCreditSummary(user);
+  }
+
+  async refillCredits(userId: string) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new ForbiddenException('Credit refill is only available outside production.');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    await this.prisma.userUsageLimit.upsert({
+      where: { userId },
+      update: {
+        creditsUsed: 0,
+        lastResetDate: new Date(),
+      },
+      create: {
+        userId,
+        creditsUsed: 0,
+        lastResetDate: new Date(),
+      },
+    });
 
     return this.withUserCreditSummary(user);
   }
