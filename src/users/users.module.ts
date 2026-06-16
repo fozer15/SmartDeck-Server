@@ -6,7 +6,7 @@ import { FilesModule } from '../files/files.module';
 import { BillingModule } from '../billing/billing.module';
 
 @Module({
-  imports: [forwardRef(() => AuthModule), forwardRef(() => FilesModule), BillingModule],
+  imports: [forwardRef(() => AuthModule), forwardRef(() => FilesModule), forwardRef(() => BillingModule)],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

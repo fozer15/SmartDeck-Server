@@ -15,7 +15,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { PDFDocument } from 'pdf-lib';
 import { AppLanguage, QuizGenerationJobStatus, QuizGenerationSourceType } from '@prisma/client'
-import { CreditCostType, calculateCreditsForUnits, getMaxQuestionsPerDeckForPlan } from '../config/plan-limits';
+import { CreditCostType, PlanType, calculateCreditsForUnits, getMaxQuestionsPerDeckForPlan } from '../config/plan-limits';
 import { QuizGenerationQueueService } from './quiz-generation.queue.service';
 
 const APP_LANGUAGE_LABELS: Record<AppLanguage, string> = {
@@ -2112,14 +2112,15 @@ Guidelines:
     userText: string, // <-- Changed from array to a single text string
   ) {
     const tutorChatCreditCost = calculateCreditsForUnits(CreditCostType.TUTOR_CHAT_MESSAGE, 1);
-    const affordability = await this.billing.canAffordCredits(userId, tutorChatCreditCost);
+    const creditSummary = await this.billing.getCreditSummary(userId);
+    const hasUnlimitedTutorMessages = creditSummary.plan === PlanType.PRO;
 
-    if (!affordability.canAfford) {
+    if (!hasUnlimitedTutorMessages && creditSummary.remainingCredits < tutorChatCreditCost) {
        return {
           status: 'credits_needed',
           requiredCredits: tutorChatCreditCost,
-          remainingCredits: affordability.remainingCredits,
-          monthlyCredits: affordability.monthlyCredits,
+          remainingCredits: creditSummary.remainingCredits,
+          monthlyCredits: creditSummary.monthlyCredits,
         };
     }
 
@@ -2221,7 +2222,9 @@ Guidelines:
       },
     });
 
-    await this.billing.consumeCredits(userId, tutorChatCreditCost, 'Tutor chat');
+    if (!hasUnlimitedTutorMessages) {
+      await this.billing.consumeCredits(userId, tutorChatCreditCost, 'Tutor chat');
+    }
 
     return { reply: aiReplyText };
     }}

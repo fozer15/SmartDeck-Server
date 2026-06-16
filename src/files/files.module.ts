@@ -9,6 +9,6 @@ import { BillingModule } from '../billing/billing.module';
   controllers: [FilesController],
   providers: [FilesService],
   exports: [FilesService],
-  imports: [forwardRef(() => AuthModule), RevenueCatModule, BillingModule],
+  imports: [forwardRef(() => AuthModule), RevenueCatModule, forwardRef(() => BillingModule)],
 })
 export class FilesModule {}

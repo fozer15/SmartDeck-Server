@@ -4,6 +4,7 @@ import { EnvModule } from './env/env.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { BillingModule } from './billing/billing.module';
 import { FilesModule } from './files/files.module';
 import { QuizzesModule } from './quizzes/quizzes.module';
 
@@ -14,6 +15,7 @@ import { QuizzesModule } from './quizzes/quizzes.module';
     PrismaModule,
     AuthModule,
     UsersModule,
+    BillingModule,
     FilesModule,
     QuizzesModule,
   ],

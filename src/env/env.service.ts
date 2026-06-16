@@ -16,9 +16,15 @@ export class EnvService {
   readonly r2BucketName: string;
   readonly r2PublicUrl: string;
   readonly appBaseUrl: string;
+  readonly clientAppUrl: string;
   readonly revenueCatApiKey: string;
   readonly redisUrl: string;
   readonly quizGenerationWorkerConcurrency: number;
+  readonly stripeSecretKey: string;
+  readonly stripeWebhookSecret: string;
+  readonly stripeProMonthlyPriceId: string;
+  readonly stripeProYearlyPriceId: string;
+  readonly stripeRevenueCatApiKey: string;
 
   constructor(config: ConfigService) {
     this.firebaseProjectId = config.getOrThrow('FIREBASE_PROJECT_ID');
@@ -32,8 +38,14 @@ export class EnvService {
     this.r2BucketName = config.getOrThrow('R2_BUCKET_NAME');
     this.r2PublicUrl = config.getOrThrow<string>('R2_PUBLIC_URL').replace(/\/$/, '');
     this.appBaseUrl = (config.get<string>('APP_BASE_URL') || 'http://localhost:3000').replace(/\/$/, '');
+    this.clientAppUrl = (config.get<string>('CLIENT_APP_URL') || 'http://localhost:5173').replace(/\/$/, '');
     this.revenueCatApiKey = config.getOrThrow('RC_API_KEY');
+    this.stripeRevenueCatApiKey = config.getOrThrow('STRIPE_RC_API_KEY');
     this.redisUrl = config.get<string>('REDIS_URL') || 'redis://127.0.0.1:6379';
+    this.stripeSecretKey = config.get<string>('STRIPE_SECRET_KEY') || '';
+    this.stripeWebhookSecret = config.get<string>('STRIPE_WEBHOOK_SECRET') || '';
+    this.stripeProMonthlyPriceId = config.get<string>('STRIPE_PRO_MONTHLY_PRICE_ID') || '';
+    this.stripeProYearlyPriceId = config.get<string>('STRIPE_PRO_YEARLY_PRICE_ID') || '';
 
     const configuredConcurrency = Number(config.get<string>('QUIZ_GENERATION_WORKER_CONCURRENCY') || 2);
     this.quizGenerationWorkerConcurrency = Number.isFinite(configuredConcurrency) && configuredConcurrency > 0
