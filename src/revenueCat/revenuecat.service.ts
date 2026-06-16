@@ -14,7 +14,7 @@ export class RevenueCatService {
     this.stripe_key = env.stripeRevenueCatApiKey;
   }
 
-  async syncStripePurchase(appUserId: string, fetchToken: string, retries = 3): Promise<any> {
+  async syncStripePurchase(appUserId: string, fetchToken: string, retries = 4): Promise<any> {
     if (!this.apiKey) {
       throw new Error('RevenueCat API key is missing from environment variables.');
     }

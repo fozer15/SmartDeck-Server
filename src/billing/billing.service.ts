@@ -87,6 +87,10 @@ export class BillingService {
           billingInterval: interval,
         },
       },
+      automatic_tax: { 
+      enabled: true 
+      },
+      billing_address_collection: 'required',
     });
 
     if (!session.url) {
