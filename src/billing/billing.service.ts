@@ -27,6 +27,13 @@ type CreditSummary = {
 
 type BillingInterval = 'monthly' | 'yearly';
 
+type MembershipStatus = {
+  plan: PlanType;
+  subscriptionId: string | null;
+  cancelAtPeriodEnd: boolean;
+  currentPeriodEnd: number | null;
+};
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
@@ -49,6 +56,12 @@ export class BillingService {
 
     if (plan === PlanType.PRO) {
       throw new ForbiddenException('User is already on the Pro plan.');
+    }
+
+    const existingSubscription = await this.findLatestCancelableSubscriptionForUser(stripe, userId);
+
+    if (existingSubscription) {
+      throw new ForbiddenException('User already has an active Pro subscription.');
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -86,9 +99,92 @@ export class BillingService {
     };
   }
 
+  async cancelMembership(userId: string) {
+    const stripe = this.getStripeClient();
+    const plan = await this.resolvePlan(userId);
+
+    if (plan !== PlanType.PRO) {
+      throw new BadRequestException('User does not have an active Pro membership.');
+    }
+
+    const subscription = await this.findLatestCancelableSubscriptionForUser(stripe, userId);
+
+    if (!subscription) {
+      throw new NotFoundException('No active Stripe subscription found for this user.');
+    }
+
+    if (subscription.cancel_at_period_end) {
+      return this.buildMembershipCancellationResponse(subscription, true);
+    }
+
+    const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
+      cancel_at_period_end: true,
+    });
+
+    await this.syncSubscriptionToRevenueCat(updatedSubscription);
+
+    return this.buildMembershipCancellationResponse(updatedSubscription, false);
+  }
+
+  async renewMembership(userId: string) {
+    const stripe = this.getStripeClient();
+    const plan = await this.resolvePlan(userId);
+
+    if (plan !== PlanType.PRO) {
+      throw new BadRequestException('User does not have an active Pro membership.');
+    }
+
+    const subscription = await this.findLatestCancelableSubscriptionForUser(stripe, userId);
+
+    if (!subscription) {
+      throw new NotFoundException('No active Stripe subscription found for this user.');
+    }
+
+    if (!subscription.cancel_at_period_end) {
+      return this.buildMembershipRenewalResponse(subscription, true);
+    }
+
+    const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
+      cancel_at_period_end: false,
+    });
+
+    await this.syncSubscriptionToRevenueCat(updatedSubscription);
+
+    return this.buildMembershipRenewalResponse(updatedSubscription, false);
+  }
+
+  async getMembershipStatus(userId: string): Promise<MembershipStatus> {
+    const plan = await this.resolvePlan(userId);
+
+    if (!this.stripe) {
+      return {
+        plan,
+        subscriptionId: null,
+        cancelAtPeriodEnd: false,
+        currentPeriodEnd: null,
+      };
+    }
+
+    const subscription = await this.findLatestCancelableSubscriptionForUser(this.stripe, userId);
+    if (!subscription) {
+      return {
+        plan,
+        subscriptionId: null,
+        cancelAtPeriodEnd: false,
+        currentPeriodEnd: null,
+      };
+    }
+
+    return {
+      plan,
+      subscriptionId: subscription.id,
+      cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+      currentPeriodEnd: this.getSubscriptionCurrentPeriodEnd(subscription),
+    };
+  }
+
   async handleStripeWebhook(signature: string | undefined, rawBody: Buffer | undefined) {
     const stripe = this.getStripeClient();
-    console.log('Received Stripe webhook event');
     if (!this.env.stripeWebhookSecret) {
       throw new ServiceUnavailableException('Stripe webhook secret is not configured.');
     }
@@ -281,5 +377,45 @@ export class BillingService {
     }
 
     return session.id;
+  }
+
+  private async findLatestCancelableSubscriptionForUser(stripe: Stripe, userId: string) {
+    const subscriptions = await stripe.subscriptions.list({
+      status: 'all',
+      limit: 100,
+    });
+
+    const cancellableStatuses = new Set(['active', 'trialing', 'past_due', 'unpaid', 'incomplete']);
+
+    return subscriptions.data
+      .filter((subscription) => subscription.metadata?.appUserId === userId)
+      .filter((subscription) => cancellableStatuses.has(subscription.status))
+      .sort((left, right) => right.created - left.created)[0] || null;
+  }
+
+  private buildMembershipCancellationResponse(subscription: Stripe.Subscription, alreadyScheduled: boolean) {
+    const currentPeriodEnd = this.getSubscriptionCurrentPeriodEnd(subscription);
+
+    return {
+      status: alreadyScheduled ? 'already_scheduled' : 'cancel_scheduled',
+      subscriptionId: subscription.id,
+      cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+      currentPeriodEnd,
+    };
+  }
+
+  private buildMembershipRenewalResponse(subscription: Stripe.Subscription, alreadyActive: boolean) {
+    return {
+      status: alreadyActive ? 'already_active' : 'renewed',
+      subscriptionId: subscription.id,
+      cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+      currentPeriodEnd: this.getSubscriptionCurrentPeriodEnd(subscription),
+    };
+  }
+
+  private getSubscriptionCurrentPeriodEnd(subscription: Stripe.Subscription) {
+    return Number((subscription as any)?.cancel_at || 0)
+      || Number((subscription as any)?.current_period_end || 0)
+      || null;
   }
 }
