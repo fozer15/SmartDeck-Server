@@ -65,6 +65,25 @@ export class QuizzesController {
     return this.quizzesService.shuffleRemainingQuestions(req.user.uid, sessionId);
   }
 
+  @Get(':quizId/questions')
+  getDeckQuestions(
+    @Param('quizId') quizId: string,
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    // Default to page 1 and a reasonable limit (e.g., 10 or 20) if not provided
+    const parsedPage = Number(page) > 0 ? Number(page) : 1;
+    const parsedLimit = Number(limit) > 0 ? Number(limit) : 10; 
+
+    return this.quizzesService.getQuestionsByQuizId(
+      req.user.uid, 
+      quizId, 
+      parsedPage, 
+      parsedLimit
+    );
+  }
+
   @Get()
   findAll(
     @Req() req: any,

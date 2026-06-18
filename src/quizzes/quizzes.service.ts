@@ -1534,6 +1534,54 @@ Guidelines:
     };
   }
 
+
+  async getQuestionsByQuizId(userId: string, quizId: string, page: number, limit: number) {
+    // 1. Verify the quiz exists and the user has access
+    const quiz = await this.prisma.generatedQuiz.findUnique({
+      where: { id: quizId },
+      select: { userId: true, isPublic: true }, // Only fetch what we need for auth
+    });
+
+    if (!quiz) {
+      throw new NotFoundException('Quiz not found');
+    }
+
+    // If the user doesn't own it and it's not public, block access
+    if (quiz.userId !== userId && !quiz.isPublic) {
+      throw new ForbiddenException('You do not have permission to view these questions');
+    }
+
+    // 2. Calculate pagination offset
+    const skip = (page - 1) * limit;
+
+    // 3. Fetch data and total count concurrently for better performance
+    const [questions, total] = await Promise.all([
+      this.prisma.quizQuestion.findMany({
+        where: { quizId: quizId },
+        skip: skip,
+        take: limit,
+        orderBy: {
+          createdAt: 'asc', // Ensures consistent ordering across pages
+        },
+      }),
+      this.prisma.quizQuestion.count({
+        where: { quizId: quizId },
+      }),
+    ]);
+
+    // 4. Return a structured response with pagination metadata
+    return {
+      data: questions,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page * limit < total,
+      },
+    };
+  }
+
   async getQuestionBatch(userId: string, sessionId: string, offset = 0, limit?: number) {
     const safeOffset = Math.max(0, offset);
     const requestedLimit = typeof limit === 'number' ? limit : this.defaultBatchSize;
