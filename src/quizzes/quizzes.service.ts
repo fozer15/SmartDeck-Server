@@ -1560,9 +1560,9 @@ Guidelines:
         where: { quizId: quizId },
         skip: skip,
         take: limit,
-        orderBy: {
+        orderBy: [{
           createdAt: 'asc', // Ensures consistent ordering across pages
-        },
+        },{id: 'desc'}],
       }),
       this.prisma.quizQuestion.count({
         where: { quizId: quizId },
