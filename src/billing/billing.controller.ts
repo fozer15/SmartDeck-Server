@@ -44,4 +44,13 @@ export class BillingController {
       req.rawBody,
     );
   }
+
+  @Post('webhooks/revenuecat')
+  @HttpCode(200)
+  handleRevenueCatWebhook(@Req() req: any, @Body() body: any) {
+    return this.billingService.handleRevenueCatWebhook(
+      req.headers['authorization'],
+      body,
+    );
+  }
 }

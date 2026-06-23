@@ -26,6 +26,9 @@ export const APP_LIMITS = {
     MAX_PASTE_CHARACTERS_PER_REQUEST: 10000,
     MAX_PDF_FILE_SIZE_MB: 15,
     MAX_AUDIO_FILE_SIZE_MB: 25,
+    // Free plan credits roll over every N days from the last reset (lazy reset).
+    // Pro plan credits are reset by the RevenueCat webhook on every successful renewal.
+    FREE_PLAN_RESET_INTERVAL_DAYS: 30,
   },
   MONTHLY_CREDITS: {
     [PlanType.FREE]: 250,
