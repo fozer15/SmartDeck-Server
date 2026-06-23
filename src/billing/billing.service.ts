@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RevenueCatService } from '../revenueCat/revenuecat.service';
@@ -241,10 +242,8 @@ export class BillingService {
   }
 
   async getCreditSummary(userId: string): Promise<CreditSummary> {
-    const [plan, usage] = await Promise.all([
-      this.resolvePlan(userId),
-      this.getUsageRecord(userId),
-    ]);
+    const plan = await this.resolvePlan(userId);
+    const usage = await this.getUsageRecordWithLazyReset(userId, plan);
 
     return this.buildCreditSummary(plan, usage.creditsUsed);
   }
@@ -265,6 +264,9 @@ export class BillingService {
 
     const plan = await this.resolvePlan(userId);
     const monthlyCredits = getMonthlyCreditsForPlan(plan);
+
+    // Apply free-plan lazy reset before mutating credits.
+    await this.getUsageRecordWithLazyReset(userId, plan);
 
     return this.prisma.$transaction(async (tx) => {
       const usage = await tx.userUsageLimit.findUnique({
@@ -293,6 +295,125 @@ export class BillingService {
 
       return this.buildCreditSummary(plan, updatedUsage.creditsUsed);
     });
+  }
+
+  /**
+   * Resets the user's monthly credit usage and stamps a new lastResetDate.
+   * Called by the RevenueCat webhook for Pro renewals and used internally
+   * for free-plan lazy resets.
+   */
+  async resetUserCredits(userId: string): Promise<CreditSummary> {
+    const plan = await this.resolvePlan(userId);
+
+    const updatedUsage = await this.prisma.userUsageLimit.upsert({
+      where: { userId },
+      update: {
+        creditsUsed: 0,
+        lastResetDate: new Date(),
+      },
+      create: {
+        userId,
+        creditsUsed: 0,
+        lastResetDate: new Date(),
+      },
+    });
+
+    this.logger.log(`Reset credits for user ${userId} (plan=${plan}).`);
+    return this.buildCreditSummary(plan, updatedUsage.creditsUsed);
+  }
+
+  /**
+   * RevenueCat sends an event for every successful renewal / purchase / refund.
+   * We only care about a small subset that should top up a user's credits.
+   *
+   * @see https://www.revenuecat.com/docs/integrations/webhooks/event-types
+   */
+  async handleRevenueCatWebhook(authHeader: string | undefined, body: any) {
+    const expectedAuth = this.env.revenueCatWebhookAuth;
+    if (!expectedAuth) {
+      throw new ServiceUnavailableException('RevenueCat webhook auth secret is not configured.');
+    }
+
+    if (!authHeader || authHeader !== `Bearer ${expectedAuth}` && authHeader !== expectedAuth) {
+      throw new UnauthorizedException('Invalid RevenueCat webhook authorization header.');
+    }
+
+    const event = body?.event;
+    if (!event || typeof event !== 'object') {
+      throw new BadRequestException('Invalid RevenueCat webhook payload: missing event.');
+    }
+
+    const eventType: string = event.type;
+    const appUserId: string | undefined =
+      event.app_user_id || event.original_app_user_id || event.aliases?.[0];
+
+    if (!appUserId) {
+      this.logger.warn(`Ignoring RevenueCat ${eventType} event with no app_user_id.`);
+      return { received: true, ignored: true, reason: 'missing_app_user_id' };
+    }
+
+    // Events that should grant a fresh credit allowance.
+    const creditGrantingEvents = new Set([
+      'INITIAL_PURCHASE',
+      'RENEWAL',
+      'PRODUCT_CHANGE',
+      'UNCANCELLATION',
+      'TRANSFER',
+      'NON_RENEWING_PURCHASE',
+    ]);
+
+    if (!creditGrantingEvents.has(eventType)) {
+      this.logger.debug(`Ignoring RevenueCat event type "${eventType}" for user ${appUserId}.`);
+      return { received: true, ignored: true, reason: `unsupported_event:${eventType}` };
+    }
+
+    // Make sure the user actually exists before touching usage records.
+    const user = await this.prisma.user.findUnique({
+      where: { id: appUserId },
+      select: { id: true },
+    });
+
+    if (!user) {
+      this.logger.warn(`RevenueCat ${eventType} for unknown user ${appUserId}, skipping reset.`);
+      return { received: true, ignored: true, reason: 'unknown_user' };
+    }
+
+    await this.resetUserCredits(appUserId);
+    return { received: true, reset: true, eventType, appUserId };
+  }
+
+  /**
+   * Loads the usage record. For free-plan users, if the last reset is older than
+   * FREE_PLAN_RESET_INTERVAL_DAYS, we roll the counter back to zero and stamp
+   * a new reset date. Pro users are not touched here — they are reset by the
+   * RevenueCat webhook on every renewal.
+   */
+  private async getUsageRecordWithLazyReset(userId: string, plan: PlanType) {
+    const usage = await this.getUsageRecord(userId);
+
+    if (plan !== PlanType.FREE) {
+      return usage;
+    }
+
+    const intervalMs =
+      APP_LIMITS.SYSTEM.FREE_PLAN_RESET_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
+    const lastReset = usage.lastResetDate ? new Date(usage.lastResetDate).getTime() : 0;
+    const isExpired = Date.now() - lastReset >= intervalMs;
+
+    if (!isExpired) {
+      return usage;
+    }
+
+    const refreshed = await this.prisma.userUsageLimit.update({
+      where: { userId },
+      data: {
+        creditsUsed: 0,
+        lastResetDate: new Date(),
+      },
+    });
+
+    this.logger.log(`Lazy-reset free-plan credits for user ${userId}.`);
+    return refreshed;
   }
 
   private async getUsageRecord(userId: string) {

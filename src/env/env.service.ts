@@ -18,6 +18,7 @@ export class EnvService {
   readonly appBaseUrl: string;
   readonly clientAppUrl: string;
   readonly revenueCatApiKey: string;
+  readonly revenueCatWebhookAuth: string;
   readonly redisUrl: string;
   readonly quizGenerationWorkerConcurrency: number;
   readonly stripeSecretKey: string;
@@ -40,6 +41,7 @@ export class EnvService {
     this.appBaseUrl = (config.get<string>('APP_BASE_URL') || 'http://localhost:3000').replace(/\/$/, '');
     this.clientAppUrl = (config.get<string>('CLIENT_APP_URL') || 'http://localhost:5173').replace(/\/$/, '');
     this.revenueCatApiKey = config.getOrThrow('RC_API_KEY');
+    this.revenueCatWebhookAuth = config.get<string>('RC_WEBHOOK_AUTH') || '';
     this.stripeRevenueCatApiKey = config.getOrThrow('STRIPE_RC_API_KEY');
     this.redisUrl = config.get<string>('REDIS_URL') || 'redis://127.0.0.1:6379';
     this.stripeSecretKey = config.get<string>('STRIPE_SECRET_KEY') || '';
