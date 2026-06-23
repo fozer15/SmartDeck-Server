@@ -242,10 +242,15 @@ export class BillingService {
   }
 
   async getCreditSummary(userId: string): Promise<CreditSummary> {
-    const plan = await this.resolvePlan(userId);
-    const usage = await this.getUsageRecordWithLazyReset(userId, plan);
+    // Plan resolution (RevenueCat HTTP) and usage record (DB) are independent —
+    // fan them out in parallel, then apply the lazy reset if needed.
+    const [plan, usage] = await Promise.all([
+      this.resolvePlan(userId),
+      this.getUsageRecord(userId),
+    ]);
 
-    return this.buildCreditSummary(plan, usage.creditsUsed);
+    const effectiveUsage = await this.applyFreePlanLazyReset(userId, plan, usage);
+    return this.buildCreditSummary(plan, effectiveUsage.creditsUsed);
   }
 
   async canAffordCredits(userId: string, credits: number): Promise<CreditSummary & { canAfford: boolean }> {
@@ -262,11 +267,14 @@ export class BillingService {
       return this.getCreditSummary(userId);
     }
 
-    const plan = await this.resolvePlan(userId);
-    const monthlyCredits = getMonthlyCreditsForPlan(plan);
+    // Fetch plan + usage in parallel, then run the lazy-reset side effect.
+    const [plan, usage] = await Promise.all([
+      this.resolvePlan(userId),
+      this.getUsageRecord(userId),
+    ]);
+    await this.applyFreePlanLazyReset(userId, plan, usage);
 
-    // Apply free-plan lazy reset before mutating credits.
-    await this.getUsageRecordWithLazyReset(userId, plan);
+    const monthlyCredits = getMonthlyCreditsForPlan(plan);
 
     return this.prisma.$transaction(async (tx) => {
       const usage = await tx.userUsageLimit.findUnique({
@@ -383,14 +391,18 @@ export class BillingService {
   }
 
   /**
-   * Loads the usage record. For free-plan users, if the last reset is older than
-   * FREE_PLAN_RESET_INTERVAL_DAYS, we roll the counter back to zero and stamp
-   * a new reset date. Pro users are not touched here — they are reset by the
-   * RevenueCat webhook on every renewal.
+   * If the user is on the FREE plan and their last reset is older than
+   * FREE_PLAN_RESET_INTERVAL_DAYS, zero out their credit usage and stamp a
+   * fresh lastResetDate. Returns the (possibly updated) usage record.
+   *
+   * Pro users are not touched here — they are reset by the RevenueCat
+   * webhook on every renewal.
    */
-  private async getUsageRecordWithLazyReset(userId: string, plan: PlanType) {
-    const usage = await this.getUsageRecord(userId);
-
+  private async applyFreePlanLazyReset(
+    userId: string,
+    plan: PlanType,
+    usage: { creditsUsed: number; lastResetDate: Date | null },
+  ) {
     if (plan !== PlanType.FREE) {
       return usage;
     }
