@@ -6,17 +6,15 @@ import {
   Param,
   Query,
   Req,
-  UploadedFile,
-  UseInterceptors,
-  BadRequestException,
   UseGuards,
   StreamableFile,
   Res,
+  Body,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { memoryStorage } from 'multer';
 import { FilesService } from './files.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { CreateSignedUploadDto } from './dto/create-signed-upload.dto';
+import { CompleteSignedUploadDto } from './dto/complete-signed-upload.dto';
 import type { Response } from 'express';
 
 @Controller('files')
@@ -24,77 +22,14 @@ import type { Response } from 'express';
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
 
-  @Post('upload')
-  @UseInterceptors(
-    FileInterceptor('pdf', {
-      storage: memoryStorage(),
-      fileFilter: (req, file, cb) => {
-        if (file.mimetype !== 'application/pdf') return cb(new BadRequestException('Only PDF files allowed'), false);
-        cb(null, true);
-      },
-      limits: { fileSize: 20 * 1024 * 1024 },
-    }),
-  )
-  upload(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
-    if (!file) throw new BadRequestException('No PDF file uploaded');
-    return this.filesService.upload(req.user.uid, file);
+  @Post('upload-request')
+  createSignedUpload(@Body() body: CreateSignedUploadDto, @Req() req: any) {
+    return this.filesService.createSignedUpload(req.user.uid, body);
   }
 
-  @Post('upload-audio')
-  @UseInterceptors(
-    FileInterceptor('audio', {
-      storage: memoryStorage(),
-      fileFilter: (req, file, cb) => {
-        const allowed = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/x-m4a', 'audio/mp4'];
-        if (!allowed.includes(file.mimetype)) {
-          return cb(new BadRequestException('Only audio files are allowed (MP3, WAV, OGG, WebM, M4A)'), false);
-        }
-        cb(null, true);
-      },
-      limits: { fileSize: 50 * 1024 * 1024 },
-    }),
-  )
-  uploadAudio(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
-    if (!file) throw new BadRequestException('No audio file uploaded');
-    return this.filesService.upload(req.user.uid, file);
-  }
-
-  @Post('upload-image')
-  @UseInterceptors(
-    FileInterceptor('image', {
-      storage: memoryStorage(),
-      fileFilter: (req, file, cb) => {
-        const allowed = ['image/png', 'image/jpeg', 'image/webp'];
-        if (!allowed.includes(file.mimetype)) {
-          return cb(new BadRequestException('Only image files are allowed (PNG, JPEG, WEBP)'), false);
-        }
-        cb(null, true);
-      },
-      limits: { fileSize: 20 * 1024 * 1024 },
-    }),
-  )
-  uploadImage(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
-    if (!file) throw new BadRequestException('No image file uploaded');
-    return this.filesService.upload(req.user.uid, file);
-  }
-
-  @Post('upload-avatar')
-  @UseInterceptors(
-    FileInterceptor('avatar', {
-      storage: memoryStorage(),
-      fileFilter: (req, file, cb) => {
-        const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/webp'];
-        if (!allowedMimeTypes.includes(file.mimetype)) {
-          return cb(new BadRequestException('Only PNG, JPEG, or WEBP images are allowed'), false);
-        }
-        cb(null, true);
-      },
-      limits: { fileSize: 5 * 1024 * 1024 },
-    }),
-  )
-  uploadAvatar(@UploadedFile() file: Express.Multer.File, @Req() req: any) {
-    if (!file) throw new BadRequestException('No avatar image uploaded');
-    return this.filesService.uploadAvatar(req.user.uid, file);
+  @Post('upload-complete')
+  completeSignedUpload(@Body() body: CompleteSignedUploadDto, @Req() req: any) {
+    return this.filesService.completeSignedUpload(req.user.uid, body.uploadToken);
   }
 
   @Get()

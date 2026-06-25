@@ -1,19 +1,36 @@
 import { ForbiddenException, Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
-import { PDFDocument } from 'pdf-lib';
 import { BillingService } from '../billing/billing.service';
 import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
-import { parseBuffer } from 'music-metadata';
+import { createHmac, timingSafeEqual } from 'crypto';
+import { CreateSignedUploadDto, SignedUploadType } from './dto/create-signed-upload.dto';
+
+type SignedUploadTokenPayload = {
+  userId: string;
+  key: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  uploadType: SignedUploadType;
+  creditCost: number;
+  expiresAt: number;
+};
+
+type SignedUploadConstraints = {
+  allowedMimeTypes: string[];
+  maxFileSize: number;
+};
 
 @Injectable()
 export class FilesService {
   private s3: S3Client;
   private bucketName: string;
   private readonly signedViewUrlTtlSeconds = 300;
+  private readonly signedUploadUrlTtlSeconds = 900;
   private readonly appBaseUrl: string;
 
   constructor(
@@ -33,10 +50,20 @@ export class FilesService {
     this.appBaseUrl = env.appBaseUrl;
   }
 
-  async upload(userId: string, file: Express.Multer.File) {
-    const safeFileName = this.toStorageSafeFileName(file.originalname);
-    const r2Key = `uploads/${userId}/files/${Date.now()}-${safeFileName}`;
-    const uploadCreditCost = await this.calculateUploadCreditCost(file, safeFileName);
+  async createSignedUpload(userId: string, input: CreateSignedUploadDto) {
+    const normalizedMimeType = String(input.mimeType || '').trim().toLowerCase();
+    const constraints = this.getSignedUploadConstraints(input.uploadType);
+    const safeFileName = this.toStorageSafeFileName(input.fileName);
+
+    if (!constraints.allowedMimeTypes.includes(normalizedMimeType)) {
+      throw new BadRequestException(this.getInvalidMimeTypeMessage(input.uploadType));
+    }
+
+    if (!Number.isFinite(input.size) || input.size <= 0 || input.size > constraints.maxFileSize) {
+      throw new BadRequestException(this.getInvalidFileSizeMessage(input.uploadType, constraints.maxFileSize));
+    }
+
+    const uploadCreditCost = this.calculateSignedUploadCreditCost(input, safeFileName);
 
     if (uploadCreditCost > 0) {
       const affordability = await this.billing.canAffordCredits(userId, uploadCreditCost);
@@ -50,28 +77,124 @@ export class FilesService {
       }
     }
 
-    await this.s3.send(
+    const key = input.uploadType === 'avatar'
+      ? `uploads/${userId}/avatar/${Date.now()}-${safeFileName}`
+      : `uploads/${userId}/files/${Date.now()}-${safeFileName}`;
+    const uploadUrl = await getSignedUrl(
+      this.s3,
       new PutObjectCommand({
         Bucket: this.bucketName,
-        Key: r2Key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
+        Key: key,
+        ContentType: normalizedMimeType,
       }),
+      { expiresIn: this.signedUploadUrlTtlSeconds },
     );
+
+    const uploadToken = this.signUploadToken({
+      userId,
+      key,
+      originalName: safeFileName,
+      mimeType: normalizedMimeType,
+      size: input.size,
+      uploadType: input.uploadType,
+      creditCost: uploadCreditCost,
+      expiresAt: Date.now() + this.signedUploadUrlTtlSeconds * 1000,
+    });
+
+    return {
+      status: 'ready',
+      uploadUrl,
+      uploadToken,
+      expiresIn: this.signedUploadUrlTtlSeconds,
+      method: 'PUT',
+      headers: {
+        'Content-Type': normalizedMimeType,
+      },
+    };
+  }
+
+  async completeSignedUpload(userId: string, uploadToken: string) {
+    const payload = this.verifyUploadToken(uploadToken);
+
+    if (payload.userId !== userId) {
+      throw new ForbiddenException('You cannot complete another user\'s upload.');
+    }
+
+    if (payload.uploadType !== 'avatar') {
+      const existingFile = await this.prisma.uploadedFile.findFirst({
+        where: {
+          userId,
+          r2Key: payload.key,
+        },
+      });
+
+      if (existingFile) {
+        return existingFile;
+      }
+    }
+
+    const objectHead = await this.s3.send(
+      new HeadObjectCommand({
+        Bucket: this.bucketName,
+        Key: payload.key,
+      }),
+    ).catch(() => {
+      throw new BadRequestException('Uploaded file could not be found in storage. Please upload the file again.');
+    });
+
+    if ((objectHead.ContentLength || 0) !== payload.size) {
+      throw new BadRequestException('Uploaded file size did not match the signed upload request.');
+    }
+
+    const storedMimeType = String(objectHead.ContentType || '').trim().toLowerCase();
+    if (storedMimeType && storedMimeType !== payload.mimeType) {
+      throw new BadRequestException('Uploaded file type did not match the signed upload request.');
+    }
+
+    const storedSize = Number(objectHead.ContentLength || payload.size);
+    const resolvedMimeType = storedMimeType || payload.mimeType;
+
+    if (payload.creditCost > 0) {
+      const affordability = await this.billing.canAffordCredits(userId, payload.creditCost);
+      if (!affordability.canAfford) {
+        await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucketName, Key: payload.key })).catch(() => {});
+        return {
+          status: 'credits_needed',
+          requiredCredits: payload.creditCost,
+          remainingCredits: affordability.remainingCredits,
+          monthlyCredits: affordability.monthlyCredits,
+        };
+      }
+    }
+
+    if (payload.uploadType === 'avatar') {
+      const user = await this.prisma.user.update({
+        where: { id: userId },
+        data: { avatarUrl: payload.key },
+      });
+
+      return {
+        avatarUrl: this.toAvatarEndpointUrl(user.id, user.avatarUrl),
+        user: {
+          ...user,
+          avatarUrl: this.toAvatarEndpointUrl(user.id, user.avatarUrl),
+        },
+      };
+    }
 
     const createdFile = await this.prisma.uploadedFile.create({
       data: {
         userId,
-        originalName: safeFileName,
-        r2Key,
-        mimeType: file.mimetype,
-        size: file.size,
+        originalName: payload.originalName,
+        r2Key: payload.key,
+        mimeType: resolvedMimeType,
+        size: storedSize,
       },
     });
 
-    if (uploadCreditCost > 0) {
+    if (payload.creditCost > 0) {
       try {
-        await this.billing.consumeCredits(userId, uploadCreditCost, 'File upload');
+        await this.billing.consumeCredits(userId, payload.creditCost, 'File upload');
       } catch (error) {
         await this.deleteFile(createdFile.id).catch(() => {});
         throw error;
@@ -81,62 +204,33 @@ export class FilesService {
     return createdFile;
   }
 
-  private async calculateUploadCreditCost(file: Express.Multer.File, safeFileName: string): Promise<number> {
-    if (file.mimetype === 'application/pdf') {
-      try {
-        const pdfDoc = await PDFDocument.load(file.buffer);
-        return calculateCreditsForUnits(CreditCostType.PDF_PAGE, pdfDoc.getPageCount());
-      } catch (error) {
-        throw new BadRequestException(`Could not parse PDF file: ${safeFileName}. The file may be corrupt.`);
+  private calculateSignedUploadCreditCost(input: CreateSignedUploadDto, safeFileName: string) {
+    if (input.uploadType === 'pdf') {
+      if (!Number.isInteger(input.pageCount) || input.pageCount <= 0) {
+        throw new BadRequestException(`Missing or invalid PDF page count for: ${safeFileName}.`);
       }
+
+      return calculateCreditsForUnits(CreditCostType.PDF_PAGE, input.pageCount);
     }
 
-    if (file.mimetype.startsWith('audio/')) {
-      try {
-        const metadata = await parseBuffer(file.buffer, { mimeType: file.mimetype });
-        if (!metadata.format.duration) {
-          throw new Error('No duration found');
-        }
-
-        const durationInMinutes = Math.max(1, Math.ceil(metadata.format.duration / 60));
-        return calculateCreditsForUnits(CreditCostType.AUDIO_MINUTE, durationInMinutes);
-      } catch (error) {
-        throw new BadRequestException(`Could not read audio duration for: ${safeFileName}. Unrecognized or corrupt format.`);
+    if (input.uploadType === 'audio') {
+      if (!Number.isFinite(input.audioDurationSeconds) || Number(input.audioDurationSeconds) <= 0) {
+        throw new BadRequestException(`Missing or invalid audio duration for: ${safeFileName}.`);
       }
+
+      const durationInMinutes = Math.max(1, Math.ceil(Number(input.audioDurationSeconds) / 60));
+      return calculateCreditsForUnits(CreditCostType.AUDIO_MINUTE, durationInMinutes);
     }
 
-    if (file.mimetype.startsWith('image/')) {
+    if (input.uploadType === 'image') {
       return calculateCreditsForUnits(CreditCostType.IMAGE_UPLOAD, 1);
     }
 
+    if (input.uploadType === 'avatar') {
+      return 0;
+    }
+
     return 0;
-  }
-
-  async uploadAvatar(userId: string, file: Express.Multer.File) {
-    const safeFileName = this.toStorageSafeFileName(file.originalname);
-    const r2Key = `uploads/${userId}/avatar/${Date.now()}-${safeFileName}`;
-
-    await this.s3.send(
-      new PutObjectCommand({
-        Bucket: this.bucketName,
-        Key: r2Key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
-      }),
-    );
-
-    const user = await this.prisma.user.update({
-      where: { id: userId },
-      data: { avatarUrl: r2Key },
-    });
-
-    return {
-      avatarUrl: this.toAvatarEndpointUrl(user.id, user.avatarUrl),
-      user: {
-        ...user,
-        avatarUrl: this.toAvatarEndpointUrl(user.id, user.avatarUrl),
-      },
-    };
   }
 
   async deleteFile(fileId: string) {
@@ -325,6 +419,115 @@ export class FilesService {
 
   private buildInlineContentDisposition(fileName: string) {
     return `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+  }
+
+  private getSignedUploadConstraints(uploadType: SignedUploadType): SignedUploadConstraints {
+    switch (uploadType) {
+      case 'pdf':
+        return {
+          allowedMimeTypes: ['application/pdf'],
+          maxFileSize: 20 * 1024 * 1024,
+        };
+      case 'audio':
+        return {
+          allowedMimeTypes: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/x-m4a', 'audio/mp4'],
+          maxFileSize: 50 * 1024 * 1024,
+        };
+      case 'image':
+        return {
+          allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp'],
+          maxFileSize: 20 * 1024 * 1024,
+        };
+      case 'avatar':
+        return {
+          allowedMimeTypes: ['image/png', 'image/jpeg', 'image/webp'],
+          maxFileSize: 5 * 1024 * 1024,
+        };
+      default:
+        throw new BadRequestException('Unsupported upload type.');
+    }
+  }
+
+  private getInvalidMimeTypeMessage(uploadType: SignedUploadType) {
+    switch (uploadType) {
+      case 'pdf':
+        return 'Only PDF files are allowed.';
+      case 'audio':
+        return 'Only audio files are allowed (MP3, WAV, OGG, WebM, M4A).';
+      case 'image':
+        return 'Only image files are allowed (PNG, JPEG, WEBP).';
+      case 'avatar':
+        return 'Only avatar images are allowed (PNG, JPEG, WEBP).';
+      default:
+        return 'Unsupported file type.';
+    }
+  }
+
+  private getInvalidFileSizeMessage(uploadType: SignedUploadType, maxFileSize: number) {
+    const sizeMb = Math.floor(maxFileSize / (1024 * 1024));
+
+    switch (uploadType) {
+      case 'pdf':
+        return `PDF files must be smaller than ${sizeMb} MB.`;
+      case 'audio':
+        return `Audio files must be smaller than ${sizeMb} MB.`;
+      case 'image':
+        return `Image files must be smaller than ${sizeMb} MB.`;
+      case 'avatar':
+        return `Avatar images must be smaller than ${sizeMb} MB.`;
+      default:
+        return `Files must be smaller than ${sizeMb} MB.`;
+    }
+  }
+
+  private signUploadToken(payload: SignedUploadTokenPayload) {
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = createHmac('sha256', this.getUploadTokenSecret())
+      .update(encodedPayload)
+      .digest('base64url');
+
+    return `${encodedPayload}.${signature}`;
+  }
+
+  private verifyUploadToken(uploadToken: string): SignedUploadTokenPayload {
+    const [encodedPayload, providedSignature] = String(uploadToken || '').split('.');
+
+    if (!encodedPayload || !providedSignature) {
+      throw new BadRequestException('Invalid upload token.');
+    }
+
+    const expectedSignature = createHmac('sha256', this.getUploadTokenSecret())
+      .update(encodedPayload)
+      .digest('base64url');
+
+    const providedBuffer = Buffer.from(providedSignature);
+    const expectedBuffer = Buffer.from(expectedSignature);
+
+    if (providedBuffer.length !== expectedBuffer.length || !timingSafeEqual(providedBuffer, expectedBuffer)) {
+      throw new BadRequestException('Invalid upload token signature.');
+    }
+
+    let payload: SignedUploadTokenPayload;
+
+    try {
+      payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as SignedUploadTokenPayload;
+    } catch {
+      throw new BadRequestException('Invalid upload token payload.');
+    }
+
+    if (!payload?.userId || !payload?.key || !payload?.mimeType || !payload?.originalName) {
+      throw new BadRequestException('Upload token payload is incomplete.');
+    }
+
+    if (!Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()) {
+      throw new BadRequestException('Upload token has expired.');
+    }
+
+    return payload;
+  }
+
+  private getUploadTokenSecret() {
+    return `${this.env.r2AccessKeyId}:${this.env.r2SecretAccessKey}`;
   }
 
   private toAvatarEndpointUrl(userId: string, value?: string | null) {
