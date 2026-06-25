@@ -196,7 +196,7 @@ Guidelines:
       return null;
     }
 
-    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar`;
+    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar?v=${encodeURIComponent(value)}`;
   }
 
   private withDeckFilePublicUrls<T extends { files?: Array<{ r2Key?: string | null }> }>(deck: T): T {

@@ -387,7 +387,7 @@ export class UsersService {
         avatarUrl: true,
       },
     });
-
+    
     if (!user?.avatarUrl) {
       throw new NotFoundException('Avatar not found');
     }
@@ -429,6 +429,6 @@ export class UsersService {
       return null;
     }
 
-    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar`;
+    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar?v=${encodeURIComponent(value)}`;
   }
 }

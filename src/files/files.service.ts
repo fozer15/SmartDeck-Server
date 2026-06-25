@@ -535,7 +535,7 @@ export class FilesService {
       return null;
     }
 
-    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar`;
+    return `${this.appBaseUrl}/users/${encodeURIComponent(userId)}/avatar?v=${encodeURIComponent(value)}`;
   }
 
   private toStorageSafeFileName(fileName: string) {
