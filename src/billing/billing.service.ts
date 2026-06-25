@@ -35,6 +35,8 @@ type MembershipStatus = {
   currentPeriodEnd: number | null;
 };
 
+type RevenueCatRenewalInterval = 'monthly' | 'yearly';
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
@@ -265,7 +267,7 @@ export class BillingService {
     const plan = await this.resolvePlan(userId);
     const monthlyCredits = getMonthlyCreditsForPlan(plan);
 
-    // Apply free-plan lazy reset before mutating credits.
+    // Apply any due lazy reset before mutating credits.
     await this.getUsageRecordWithLazyReset(userId, plan);
 
     return this.prisma.$transaction(async (tx) => {
@@ -299,32 +301,19 @@ export class BillingService {
 
   /**
    * Resets the user's monthly credit usage and stamps a new lastResetDate.
-   * Called by the RevenueCat webhook for Pro renewals and used internally
-   * for free-plan lazy resets.
+   * Used by RevenueCat renewal events and internal lazy reset flows.
    */
   async resetUserCredits(userId: string): Promise<CreditSummary> {
     const plan = await this.resolvePlan(userId);
 
-    const updatedUsage = await this.prisma.userUsageLimit.upsert({
-      where: { userId },
-      update: {
-        creditsUsed: 0,
-        lastResetDate: new Date(),
-      },
-      create: {
-        userId,
-        creditsUsed: 0,
-        lastResetDate: new Date(),
-      },
-    });
-
-    this.logger.log(`Reset credits for user ${userId} (plan=${plan}).`);
+    const updatedUsage = await this.applyCreditReset(userId, new Date(), `manual:${plan}`);
     return this.buildCreditSummary(plan, updatedUsage.creditsUsed);
   }
 
   /**
-   * RevenueCat sends an event for every successful renewal / purchase / refund.
-   * We only care about a small subset that should top up a user's credits.
+    * RevenueCat sends an event for every successful renewal / purchase / refund.
+    * We only accept safe cycle-start events here and derive the interval from the
+    * canonical subscriber snapshot to avoid product-change abuse.
    *
    * @see https://www.revenuecat.com/docs/integrations/webhooks/event-types
    */
@@ -356,10 +345,6 @@ export class BillingService {
     const creditGrantingEvents = new Set([
       'INITIAL_PURCHASE',
       'RENEWAL',
-      'PRODUCT_CHANGE',
-      'UNCANCELLATION',
-      'TRANSFER',
-      'NON_RENEWING_PURCHASE',
     ]);
 
     if (!creditGrantingEvents.has(eventType)) {
@@ -378,29 +363,42 @@ export class BillingService {
       return { received: true, ignored: true, reason: 'unknown_user' };
     }
 
-    await this.resetUserCredits(appUserId);
+    const cycleStartedAt = this.getRevenueCatEventCycleStart(event)
+      || await this.getRevenueCatEntitlementCycleStart(appUserId)
+      || new Date();
+    const lastResetTime = (await this.getUsageRecord(appUserId)).lastResetDate?.getTime() || 0;
+
+    if (cycleStartedAt.getTime() <= lastResetTime) {
+      this.logger.debug(`Ignoring RevenueCat ${eventType} for user ${appUserId} because cycle ${cycleStartedAt.toISOString()} was already applied.`);
+      return { received: true, ignored: true, reason: 'already_reset_for_cycle' };
+    }
+
+    if (eventType === 'RENEWAL') {
+      const renewalInterval = this.getRevenueCatEventInterval(event)
+        || await this.getRevenueCatRenewalInterval(appUserId);
+
+      if (renewalInterval !== 'monthly') {
+        this.logger.debug(`Ignoring RevenueCat RENEWAL for user ${appUserId} because interval is ${renewalInterval || 'unknown'}.`);
+        return { received: true, ignored: true, reason: `unsupported_interval:${renewalInterval || 'unknown'}` };
+      }
+    }
+
+    await this.applyCreditReset(appUserId, cycleStartedAt, `revenuecat:${eventType}`);
     return { received: true, reset: true, eventType, appUserId };
   }
 
   /**
-   * Loads the usage record. For free-plan users, if the last reset is older than
-   * FREE_PLAN_RESET_INTERVAL_DAYS, we roll the counter back to zero and stamp
-   * a new reset date. Pro users are not touched here — they are reset by the
-   * RevenueCat webhook on every renewal.
+   * Loads the usage record and applies any due lazy reset for free users and
+   * yearly subscribers.
    */
   private async getUsageRecordWithLazyReset(userId: string, plan: PlanType) {
     const usage = await this.getUsageRecord(userId);
 
-    if (plan !== PlanType.FREE) {
-      return usage;
-    }
+    const nextResetAt = plan === PlanType.FREE
+      ? this.getLatestFreePlanResetBoundary(usage.lastResetDate)
+      : await this.getLatestYearlyPlanResetBoundary(userId, usage.lastResetDate);
 
-    const intervalMs =
-      APP_LIMITS.SYSTEM.FREE_PLAN_RESET_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
-    const lastReset = usage.lastResetDate ? new Date(usage.lastResetDate).getTime() : 0;
-    const isExpired = Date.now() - lastReset >= intervalMs;
-
-    if (!isExpired) {
+    if (!nextResetAt) {
       return usage;
     }
 
@@ -408,11 +406,11 @@ export class BillingService {
       where: { userId },
       data: {
         creditsUsed: 0,
-        lastResetDate: new Date(),
+        lastResetDate: nextResetAt,
       },
     });
 
-    this.logger.log(`Lazy-reset free-plan credits for user ${userId}.`);
+    this.logger.log(`Lazy-reset credits for user ${userId} (plan=${plan}, resetAt=${nextResetAt.toISOString()}).`);
     return refreshed;
   }
 
@@ -437,6 +435,162 @@ export class BillingService {
       creditsUsed,
       remainingCredits: getRemainingCredits(monthlyCredits, creditsUsed),
     };
+  }
+
+  private getLatestFreePlanResetBoundary(lastResetDate: Date | string | null | undefined) {
+    const anchor = this.normalizeResetAnchor(lastResetDate);
+    return this.getLatestMonthlyBoundary(
+      anchor,
+      Date.now(),
+      Number.POSITIVE_INFINITY,
+      APP_LIMITS.SYSTEM.FREE_PLAN_RESET_INTERVAL_MONTHS,
+    );
+  }
+
+  private async getLatestYearlyPlanResetBoundary(userId: string, lastResetDate: Date | string | null | undefined) {
+    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
+      userId,
+      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
+    );
+
+    if (!activeEntitlement || activeEntitlement.interval !== 'yearly') {
+      return null;
+    }
+
+    if (!activeEntitlement.purchaseDate || !activeEntitlement.expiresDate) {
+      return null;
+    }
+
+    const annualPeriodStart = activeEntitlement.purchaseDate;
+    const annualPeriodEndMs = activeEntitlement.expiresDate.getTime();
+    const lastResetTime = this.normalizeResetAnchor(lastResetDate).getTime();
+
+    if (annualPeriodStart.getTime() > lastResetTime) {
+      return annualPeriodStart;
+    }
+
+    const monthlyBoundary = this.getLatestMonthlyBoundary(
+      annualPeriodStart,
+      Date.now(),
+      annualPeriodEndMs,
+    );
+
+    return monthlyBoundary && monthlyBoundary.getTime() > lastResetTime
+      ? monthlyBoundary
+      : null;
+  }
+
+  private async getRevenueCatRenewalInterval(userId: string): Promise<RevenueCatRenewalInterval | null> {
+    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
+      userId,
+      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
+    );
+
+    return activeEntitlement?.interval || null;
+  }
+
+  private async getRevenueCatEntitlementCycleStart(userId: string) {
+    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
+      userId,
+      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
+    );
+
+    return activeEntitlement?.purchaseDate || null;
+  }
+
+  private getRevenueCatEventCycleStart(event: any) {
+    const purchasedAtMs = Number(event?.purchased_at_ms || 0);
+    if (!Number.isFinite(purchasedAtMs) || purchasedAtMs <= 0) {
+      return null;
+    }
+
+    const date = new Date(purchasedAtMs);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private getRevenueCatEventInterval(event: any): RevenueCatRenewalInterval | null {
+    const productId = typeof event?.product_id === 'string' ? event.product_id : null;
+
+    if (productId === this.env.stripeProMonthlyPriceId) {
+      return 'monthly';
+    }
+
+    if (productId === this.env.stripeProYearlyPriceId) {
+      return 'yearly';
+    }
+
+    const purchasedAtMs = Number(event?.purchased_at_ms || 0);
+    const expirationAtMs = Number(event?.expiration_at_ms || 0);
+    if (!Number.isFinite(purchasedAtMs) || !Number.isFinite(expirationAtMs) || purchasedAtMs <= 0 || expirationAtMs <= 0) {
+      return null;
+    }
+
+    const durationDays = (expirationAtMs - purchasedAtMs) / (24 * 60 * 60 * 1000);
+    return durationDays >= 90 ? 'yearly' : 'monthly';
+  }
+
+  private normalizeResetAnchor(value: Date | string | null | undefined) {
+    const parsed = value ? new Date(value) : new Date();
+    return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  }
+
+  private async applyCreditReset(userId: string, resetAt: Date, reason: string) {
+    const updatedUsage = await this.prisma.userUsageLimit.upsert({
+      where: { userId },
+      update: {
+        creditsUsed: 0,
+        lastResetDate: resetAt,
+      },
+      create: {
+        userId,
+        creditsUsed: 0,
+        lastResetDate: resetAt,
+      },
+    });
+
+    this.logger.log(`Reset credits for user ${userId} (reason=${reason}, resetAt=${resetAt.toISOString()}).`);
+    return updatedUsage;
+  }
+
+  private getLatestMonthlyBoundary(
+    anchor: Date,
+    effectiveNowMs: number,
+    upperBoundMs = Number.POSITIVE_INFINITY,
+    stepMonths = 1,
+  ) {
+    let currentBoundary = new Date(anchor);
+    let nextBoundary = this.addMonthsClamped(anchor, stepMonths);
+
+    while (nextBoundary.getTime() <= effectiveNowMs && nextBoundary.getTime() < upperBoundMs) {
+      currentBoundary = nextBoundary;
+      nextBoundary = this.addMonthsClamped(nextBoundary, stepMonths);
+    }
+
+    return currentBoundary.getTime() > anchor.getTime()
+      ? currentBoundary
+      : null;
+  }
+
+  private addMonthsClamped(date: Date, months: number) {
+    const next = new Date(date);
+    const originalDay = next.getUTCDate();
+    const originalHours = next.getUTCHours();
+    const originalMinutes = next.getUTCMinutes();
+    const originalSeconds = next.getUTCSeconds();
+    const originalMilliseconds = next.getUTCMilliseconds();
+
+    next.setUTCDate(1);
+    next.setUTCMonth(next.getUTCMonth() + months);
+
+    const lastDayOfTargetMonth = new Date(Date.UTC(
+      next.getUTCFullYear(),
+      next.getUTCMonth() + 1,
+      0,
+    )).getUTCDate();
+
+    next.setUTCDate(Math.min(originalDay, lastDayOfTargetMonth));
+    next.setUTCHours(originalHours, originalMinutes, originalSeconds, originalMilliseconds);
+    return next;
   }
 
   private getStripeClient() {

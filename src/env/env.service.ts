@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class EnvService {
+  readonly nodeEnv: string;
+  readonly isProduction: boolean;
   readonly firebaseProjectId: string;
   readonly firebaseClientEmail: string;
   readonly firebasePrivateKey: string;
@@ -28,6 +30,8 @@ export class EnvService {
   readonly stripeRevenueCatApiKey: string;
 
   constructor(config: ConfigService) {
+    this.nodeEnv = config.get<string>('NODE_ENV') || 'development';
+    this.isProduction = this.nodeEnv === 'production';
     this.firebaseProjectId = config.getOrThrow('FIREBASE_PROJECT_ID');
     this.firebaseClientEmail = config.getOrThrow('FIREBASE_CLIENT_EMAIL');
     this.firebasePrivateKey = config.getOrThrow<string>('FIREBASE_PRIVATE_KEY').replace(/\\n/g, '\n');
@@ -44,14 +48,34 @@ export class EnvService {
     this.revenueCatWebhookAuth = config.get<string>('RC_WEBHOOK_AUTH') || '';
     this.stripeRevenueCatApiKey = config.getOrThrow('STRIPE_RC_API_KEY');
     this.redisUrl = config.get<string>('REDIS_URL') || 'redis://127.0.0.1:6379';
-    this.stripeSecretKey = config.get<string>('STRIPE_SECRET_KEY') || '';
-    this.stripeWebhookSecret = config.get<string>('STRIPE_WEBHOOK_SECRET') || '';
-    this.stripeProMonthlyPriceId = config.get<string>('STRIPE_PRO_MONTHLY_PRICE_ID') || '';
-    this.stripeProYearlyPriceId = config.get<string>('STRIPE_PRO_YEARLY_PRICE_ID') || '';
+    this.stripeSecretKey = this.getStripeConfigValue(config, 'STRIPE_SECRET_KEY', 'STRIPE_TEST_SECRET_KEY');
+    this.stripeWebhookSecret = this.getStripeConfigValue(config, 'STRIPE_WEBHOOK_SECRET', 'STRIPE_TEST_WEBHOOK_SECRET');
+    this.stripeProMonthlyPriceId = this.getStripeConfigValue(
+      config,
+      'STRIPE_PRO_MONTHLY_PRICE_ID',
+      'STRIPE_TEST_PRO_MONTHLY_PRICE_ID',
+    );
+    this.stripeProYearlyPriceId = this.getStripeConfigValue(
+      config,
+      'STRIPE_PRO_YEARLY_PRICE_ID',
+      'STRIPE_TEST_PRO_YEARLY_PRICE_ID',
+    );
 
     const configuredConcurrency = Number(config.get<string>('QUIZ_GENERATION_WORKER_CONCURRENCY') || 2);
     this.quizGenerationWorkerConcurrency = Number.isFinite(configuredConcurrency) && configuredConcurrency > 0
       ? Math.floor(configuredConcurrency)
       : 2;
+  }
+
+  private getStripeConfigValue(
+    config: ConfigService,
+    productionKey: string,
+    testKey: string,
+  ) {
+    if (this.isProduction) {
+      return config.get<string>(productionKey) || '';
+    }
+
+    return config.get<string>(testKey) || config.get<string>(productionKey) || '';
   }
 }

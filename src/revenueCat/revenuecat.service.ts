@@ -1,6 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EnvService } from '../env/env.service';
 
+type RevenueCatSubscriptionInterval = 'monthly' | 'yearly';
+
+export type RevenueCatActiveEntitlementSnapshot = {
+  productIdentifier: string | null;
+  purchaseDate: Date | null;
+  expiresDate: Date | null;
+  interval: RevenueCatSubscriptionInterval | null;
+};
+
 @Injectable()
 export class RevenueCatService {
   private readonly logger = new Logger(RevenueCatService.name);
@@ -59,20 +68,10 @@ export class RevenueCatService {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/subscribers/${encodeURIComponent(appUserId)}`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Accept': 'application/json',
-        },
-      });
-     
-      if (!response.ok) {
-        this.logger.error(`RevenueCat API error: ${response.status} ${response.statusText}`);
+      const data = await this.getSubscriberInfo(appUserId);
+      if (!data) {
         return false;
       }
-
-      const data = await response.json();
       
       // Navigate the response safely to find active entitlements
       const activeEntitlements = data?.subscriber?.entitlements;
@@ -84,8 +83,109 @@ export class RevenueCatService {
 
       return false;
     } catch (error) {
-      this.logger.error(`Failed to check RevenueCat entitlements: ${error.message}`);
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to check RevenueCat entitlements: ${message}`);
       return false;
     }
+  }
+
+  async getActiveEntitlementSnapshot(
+    appUserId: string,
+    entitlementId: string,
+  ): Promise<RevenueCatActiveEntitlementSnapshot | null> {
+    if (!this.apiKey) {
+      this.logger.error('RevenueCat API key is missing from environment variables.');
+      return null;
+    }
+
+    try {
+      const data = await this.getSubscriberInfo(appUserId);
+      if (!data) {
+        return null;
+      }
+
+      const entitlement = data?.subscriber?.entitlements?.[entitlementId];
+      if (!entitlement) {
+        return null;
+      }
+
+      const productIdentifier = typeof entitlement.product_identifier === 'string'
+        ? entitlement.product_identifier
+        : null;
+      const subscription = productIdentifier
+        ? data?.subscriber?.subscriptions?.[productIdentifier]
+        : null;
+      const purchaseDate = this.parseRevenueCatDate(
+        subscription?.purchase_date
+          || entitlement.purchase_date
+          || subscription?.original_purchase_date,
+      );
+      const expiresDate = this.parseRevenueCatDate(
+        subscription?.expires_date
+          || entitlement.expires_date,
+      );
+
+      if (expiresDate && expiresDate.getTime() <= Date.now()) {
+        return null;
+      }
+
+      return {
+        productIdentifier,
+        purchaseDate,
+        expiresDate,
+        interval: this.inferSubscriptionInterval(productIdentifier, purchaseDate, expiresDate),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to load RevenueCat entitlement snapshot: ${message}`);
+      return null;
+    }
+  }
+
+  private async getSubscriberInfo(appUserId: string) {
+    const response = await fetch(`${this.baseUrl}/subscribers/${encodeURIComponent(appUserId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      this.logger.error(`RevenueCat API error: ${response.status} ${response.statusText}`);
+      return null;
+    }
+
+    return response.json();
+  }
+
+  private parseRevenueCatDate(value: unknown) {
+    if (typeof value !== 'string' || !value.trim()) {
+      return null;
+    }
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private inferSubscriptionInterval(
+    productIdentifier: string | null,
+    purchaseDate: Date | null,
+    expiresDate: Date | null,
+  ): RevenueCatSubscriptionInterval | null {
+    if (productIdentifier === this.env.stripeProMonthlyPriceId) {
+      return 'monthly';
+    }
+
+    if (productIdentifier === this.env.stripeProYearlyPriceId) {
+      return 'yearly';
+    }
+
+    if (!purchaseDate || !expiresDate) {
+      return null;
+    }
+
+    const durationDays = (expiresDate.getTime() - purchaseDate.getTime()) / (24 * 60 * 60 * 1000);
+    return durationDays >= 90 ? 'yearly' : 'monthly';
   }
 }
