@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EnvService } from '../env/env.service';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { parseBuffer } from 'music-metadata';
 import { Readable } from 'stream';
 import { BillingService } from '../billing/billing.service';
 import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
@@ -153,14 +154,17 @@ export class FilesService {
 
     const storedSize = Number(objectHead.ContentLength || payload.size);
     const resolvedMimeType = storedMimeType || payload.mimeType;
+    const resolvedCreditCost = payload.uploadType === 'audio' && payload.creditCost <= 0
+      ? await this.resolveAudioUploadCreditCost(payload.key, resolvedMimeType, payload.originalName)
+      : payload.creditCost;
 
-    if (payload.creditCost > 0) {
-      const affordability = await this.billing.canAffordCredits(userId, payload.creditCost);
+    if (resolvedCreditCost > 0) {
+      const affordability = await this.billing.canAffordCredits(userId, resolvedCreditCost);
       if (!affordability.canAfford) {
         await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucketName, Key: payload.key })).catch(() => {});
         return {
           status: 'credits_needed',
-          requiredCredits: payload.creditCost,
+          requiredCredits: resolvedCreditCost,
           remainingCredits: affordability.remainingCredits,
           monthlyCredits: affordability.monthlyCredits,
         };
@@ -192,9 +196,9 @@ export class FilesService {
       },
     });
 
-    if (payload.creditCost > 0) {
+    if (resolvedCreditCost > 0) {
       try {
-        await this.billing.consumeCredits(userId, payload.creditCost, 'File upload');
+        await this.billing.consumeCredits(userId, resolvedCreditCost, 'File upload');
       } catch (error) {
         await this.deleteFile(createdFile.id).catch(() => {});
         throw error;
@@ -214,6 +218,10 @@ export class FilesService {
     }
 
     if (input.uploadType === 'audio') {
+      if (input.audioDurationSeconds === undefined || input.audioDurationSeconds === null) {
+        return 0;
+      }
+
       if (!Number.isFinite(input.audioDurationSeconds) || Number(input.audioDurationSeconds) <= 0) {
         throw new BadRequestException(`Missing or invalid audio duration for: ${safeFileName}.`);
       }
@@ -430,7 +438,7 @@ export class FilesService {
         };
       case 'audio':
         return {
-          allowedMimeTypes: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/x-m4a', 'audio/mp4'],
+          allowedMimeTypes: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/wave', 'audio/ogg', 'audio/webm', 'audio/x-m4a', 'audio/m4a', 'audio/mp4', 'audio/aac', 'audio/flac'],
           maxFileSize: 50 * 1024 * 1024,
         };
       case 'image':
@@ -453,7 +461,7 @@ export class FilesService {
       case 'pdf':
         return 'Only PDF files are allowed.';
       case 'audio':
-        return 'Only audio files are allowed (MP3, WAV, OGG, WebM, M4A).';
+        return 'Only audio files are allowed (MP3, WAV, OGG, WebM, M4A, AAC, FLAC).';
       case 'image':
         return 'Only image files are allowed (PNG, JPEG, WEBP).';
       case 'avatar':
@@ -487,6 +495,24 @@ export class FilesService {
       .digest('base64url');
 
     return `${encodedPayload}.${signature}`;
+  }
+
+  private async resolveAudioUploadCreditCost(key: string, mimeType: string, originalName: string) {
+    const { buffer } = await this.getObjectBuffer(key);
+
+    try {
+      const metadata = await parseBuffer(buffer, { mimeType }, { duration: true });
+      const durationSeconds = Number(metadata.format.duration || 0);
+
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        throw new Error('missing_duration');
+      }
+
+      const durationInMinutes = Math.max(1, Math.ceil(durationSeconds / 60));
+      return calculateCreditsForUnits(CreditCostType.AUDIO_MINUTE, durationInMinutes);
+    } catch {
+      throw new BadRequestException(`Could not read audio duration for: ${originalName}.`);
+    }
   }
 
   private verifyUploadToken(uploadToken: string): SignedUploadTokenPayload {
