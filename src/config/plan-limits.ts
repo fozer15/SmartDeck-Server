@@ -31,7 +31,7 @@ export const APP_LIMITS = {
     FREE_PLAN_RESET_INTERVAL_MONTHS: 1,
   },
   MONTHLY_CREDITS: {
-    [PlanType.FREE]: 250,
+    [PlanType.FREE]: 200,
     [PlanType.PRO]: 2500,
   },
   QUIZ_GENERATION: {

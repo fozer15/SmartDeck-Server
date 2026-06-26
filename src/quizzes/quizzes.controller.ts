@@ -115,9 +115,6 @@ export class QuizzesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    console.log(subject);
-    console.log(title);
-    console.log(school);
     const paginate = page !== undefined || limit !== undefined;
     const parsedPage = Number(page) > 0 ? Number(page) : 1;
     const parsedLimit = Number(limit) > 0 ? Number(limit) : 12;

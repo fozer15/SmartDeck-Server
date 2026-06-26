@@ -244,10 +244,15 @@ export class BillingService {
   }
 
   async getCreditSummary(userId: string): Promise<CreditSummary> {
-    const plan = await this.resolvePlan(userId);
-    const usage = await this.getUsageRecordWithLazyReset(userId, plan);
+    // Plan resolution (RevenueCat HTTP) and usage record (DB) are independent —
+    // fan them out in parallel, then apply the lazy reset if needed.
+    const [plan, usage] = await Promise.all([
+      this.resolvePlan(userId),
+      this.getUsageRecord(userId),
+    ]);
 
-    return this.buildCreditSummary(plan, usage.creditsUsed);
+    const effectiveUsage = await this.applyLazyResetIfNeeded(userId, plan, usage);
+    return this.buildCreditSummary(plan, effectiveUsage.creditsUsed);
   }
 
   async canAffordCredits(userId: string, credits: number): Promise<CreditSummary & { canAfford: boolean }> {
@@ -264,11 +269,14 @@ export class BillingService {
       return this.getCreditSummary(userId);
     }
 
-    const plan = await this.resolvePlan(userId);
-    const monthlyCredits = getMonthlyCreditsForPlan(plan);
+    // Fetch plan + usage in parallel, then run the lazy-reset side effect.
+    const [plan, usage] = await Promise.all([
+      this.resolvePlan(userId),
+      this.getUsageRecord(userId),
+    ]);
+    await this.applyLazyResetIfNeeded(userId, plan, usage);
 
-    // Apply any due lazy reset before mutating credits.
-    await this.getUsageRecordWithLazyReset(userId, plan);
+    const monthlyCredits = getMonthlyCreditsForPlan(plan);
 
     return this.prisma.$transaction(async (tx) => {
       const usage = await tx.userUsageLimit.findUnique({
@@ -388,12 +396,15 @@ export class BillingService {
   }
 
   /**
-   * Loads the usage record and applies any due lazy reset for free users and
-   * yearly subscribers.
+   * Applies any due lazy reset for free users and yearly subscribers using an
+   * already-loaded usage record (so callers can fetch plan + usage in parallel).
+   * Returns the (possibly refreshed) usage record.
    */
-  private async getUsageRecordWithLazyReset(userId: string, plan: PlanType) {
-    const usage = await this.getUsageRecord(userId);
-
+  private async applyLazyResetIfNeeded(
+    userId: string,
+    plan: PlanType,
+    usage: { creditsUsed: number; lastResetDate: Date | null },
+  ) {
     const nextResetAt = plan === PlanType.FREE
       ? this.getLatestFreePlanResetBoundary(usage.lastResetDate)
       : await this.getLatestYearlyPlanResetBoundary(userId, usage.lastResetDate);
