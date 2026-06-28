@@ -16,6 +16,8 @@ async function bootstrap() {
     rawBody: true,
   });
 
+  app.enableShutdownHooks();
+
   const env = app.get(EnvService);
   const allowedOrigins = new Set([
     DEFAULT_CLIENT_APP_URL,
