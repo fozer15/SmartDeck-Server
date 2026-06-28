@@ -2,12 +2,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EnvService } from '../env/env.service';
 
 type RevenueCatSubscriptionInterval = 'monthly' | 'yearly';
+type MembershipOrigin = 'ios' | 'web';
 
 export type RevenueCatActiveEntitlementSnapshot = {
   productIdentifier: string | null;
   purchaseDate: Date | null;
   expiresDate: Date | null;
   interval: RevenueCatSubscriptionInterval | null;
+  managementUrl: string | null;
+  origin: MembershipOrigin;
 };
 
 @Injectable()
@@ -72,15 +75,12 @@ export class RevenueCatService {
       if (!data) {
         return false;
       }
-      
       // Navigate the response safely to find active entitlements
       const activeEntitlements = data?.subscriber?.entitlements;
-
       // If the specific entitlement exists in the 'active' object, return true
       if (activeEntitlements && activeEntitlements[entitlementId]) {
         return true;
       }
-
       return false;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -115,6 +115,7 @@ export class RevenueCatService {
       const subscription = productIdentifier
         ? data?.subscriber?.subscriptions?.[productIdentifier]
         : null;
+      const managementUrl = this.parseManagementUrl(data?.subscriber?.management_url);
       const purchaseDate = this.parseRevenueCatDate(
         subscription?.purchase_date
           || entitlement.purchase_date
@@ -134,6 +135,8 @@ export class RevenueCatService {
         purchaseDate,
         expiresDate,
         interval: this.inferSubscriptionInterval(productIdentifier, purchaseDate, expiresDate),
+        managementUrl,
+        origin: this.inferMembershipOrigin(managementUrl),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -150,12 +153,12 @@ export class RevenueCatService {
         Accept: 'application/json',
       },
     });
-
-    if (!response.ok) {
+    
+    if (!response.ok) { 
       this.logger.error(`RevenueCat API error: ${response.status} ${response.statusText}`);
       return null;
     }
-
+    
     return response.json();
   }
 
@@ -166,6 +169,21 @@ export class RevenueCatService {
 
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private parseManagementUrl(value: unknown) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private inferMembershipOrigin(managementUrl: string | null): MembershipOrigin {
+    return managementUrl?.includes('apps.apple.com/account/subscriptions')
+      ? 'ios'
+      : 'web';
   }
 
   private inferSubscriptionInterval(

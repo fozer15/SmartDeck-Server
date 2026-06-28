@@ -27,12 +27,15 @@ type CreditSummary = {
 };
 
 type BillingInterval = 'monthly' | 'yearly';
+type MembershipOrigin = 'ios' | 'web';
 
 type MembershipStatus = {
   plan: PlanType;
   subscriptionId: string | null;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd: number | null;
+  origin: MembershipOrigin | null;
+  managementUrl: string | null;
 };
 
 type RevenueCatRenewalInterval = 'monthly' | 'yearly';
@@ -161,24 +164,39 @@ export class BillingService {
   }
 
   async getMembershipStatus(userId: string): Promise<MembershipStatus> {
-    const plan = await this.resolvePlan(userId);
+    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
+      userId,
+      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
+    );
+    const plan = activeEntitlement ? PlanType.PRO : PlanType.FREE;
+    const fallbackCurrentPeriodEnd = activeEntitlement?.expiresDate
+      ? Math.floor(activeEntitlement.expiresDate.getTime() / 1000)
+      : null;
 
     if (!this.stripe) {
       return {
         plan,
         subscriptionId: null,
         cancelAtPeriodEnd: false,
-        currentPeriodEnd: null,
+        currentPeriodEnd: fallbackCurrentPeriodEnd,
+        origin: activeEntitlement?.origin || null,
+        managementUrl: activeEntitlement?.managementUrl || null,
       };
     }
 
     const subscription = await this.findLatestCancelableSubscriptionForUser(this.stripe, userId);
+ 
+    const origin = activeEntitlement?.origin || (subscription ? 'web' : null);
+    const managementUrl = activeEntitlement?.managementUrl || null;
+
     if (!subscription) {
       return {
         plan,
         subscriptionId: null,
         cancelAtPeriodEnd: false,
-        currentPeriodEnd: null,
+        currentPeriodEnd: fallbackCurrentPeriodEnd,
+        origin,
+        managementUrl,
       };
     }
 
@@ -186,7 +204,9 @@ export class BillingService {
       plan,
       subscriptionId: subscription.id,
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
-      currentPeriodEnd: this.getSubscriptionCurrentPeriodEnd(subscription),
+      currentPeriodEnd: this.getSubscriptionCurrentPeriodEnd(subscription) || fallbackCurrentPeriodEnd,
+      origin,
+      managementUrl,
     };
   }
 
@@ -635,9 +655,9 @@ export class BillingService {
 
   private async syncCheckoutSessionToRevenueCat(session: Stripe.Checkout.Session) {
     const appUserId = session.metadata?.appUserId || session.client_reference_id || undefined;
-    
+ 
     const fetchToken = this.getStripeFetchTokenFromCheckoutSession(session);
-
+   
     if (!appUserId || !fetchToken) {
       this.logger.warn(`Skipping RevenueCat sync for checkout session ${session.id} because appUserId or fetch token is missing.`);
       return;
@@ -676,7 +696,7 @@ export class BillingService {
     });
 
     const cancellableStatuses = new Set(['active', 'trialing', 'past_due', 'unpaid', 'incomplete']);
-
+    console.log("test");
     return subscriptions.data
       .filter((subscription) => subscription.metadata?.appUserId === userId)
       .filter((subscription) => cancellableStatuses.has(subscription.status))
