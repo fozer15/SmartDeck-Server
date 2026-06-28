@@ -696,7 +696,7 @@ export class BillingService {
     });
 
     const cancellableStatuses = new Set(['active', 'trialing', 'past_due', 'unpaid', 'incomplete']);
-    console.log("test");
+  
     return subscriptions.data
       .filter((subscription) => subscription.metadata?.appUserId === userId)
       .filter((subscription) => cancellableStatuses.has(subscription.status))
