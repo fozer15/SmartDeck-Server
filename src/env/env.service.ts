@@ -27,6 +27,8 @@ export class EnvService {
   readonly stripeWebhookSecret: string;
   readonly stripeProMonthlyPriceId: string;
   readonly stripeProYearlyPriceId: string;
+  readonly stripeProMonthlyProductId: string;
+  readonly stripeProYearlyProductId: string;
   readonly stripeRevenueCatApiKey: string;
 
   constructor(config: ConfigService) {
@@ -59,6 +61,16 @@ export class EnvService {
       config,
       'STRIPE_PRO_YEARLY_PRICE_ID',
       'STRIPE_TEST_PRO_YEARLY_PRICE_ID',
+    );
+    this.stripeProMonthlyProductId = this.getStripeConfigValue(
+      config,
+      'STRIPE_PRO_MONTHLY_PRODUCT_ID',
+      'STRIPE_TEST_PRO_MONTHLY_PRODUCT_ID',
+    );
+    this.stripeProYearlyProductId = this.getStripeConfigValue(
+      config,
+      'STRIPE_PRO_YEARLY_PRODUCT_ID',
+      'STRIPE_TEST_PRO_YEARLY_PRODUCT_ID',
     );
 
     const configuredConcurrency = Number(config.get<string>('QUIZ_GENERATION_WORKER_CONCURRENCY') || 2);

@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RevenueCatService } from '../revenueCat/revenuecat.service';
+import type { RevenueCatActiveEntitlementSnapshot } from '../revenueCat/revenuecat.service';
 import { EnvService } from '../env/env.service';
 import {
   APP_LIMITS,
@@ -164,28 +165,33 @@ export class BillingService {
   }
 
   async getMembershipStatus(userId: string): Promise<MembershipStatus> {
-    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
+    const entitlementSnapshot = await this.revenueCat.getActiveEntitlementSnapshot(
       userId,
       APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
     );
-    const plan = activeEntitlement ? PlanType.PRO : PlanType.FREE;
-    const fallbackCurrentPeriodEnd = activeEntitlement?.expiresDate
-      ? Math.floor(activeEntitlement.expiresDate.getTime() / 1000)
+    
+    const fallbackCurrentPeriodEnd = entitlementSnapshot?.expiresDate
+      ? Math.floor(entitlementSnapshot.expiresDate.getTime() / 1000)
       : null;
 
     if (!this.stripe) {
       return {
-        plan,
+        plan: entitlementSnapshot ? PlanType.PRO : PlanType.FREE,
         subscriptionId: null,
         cancelAtPeriodEnd: false,
         currentPeriodEnd: fallbackCurrentPeriodEnd,
-        origin: activeEntitlement?.origin || null,
-        managementUrl: activeEntitlement?.managementUrl || null,
+        origin: entitlementSnapshot?.origin || null,
+        managementUrl: entitlementSnapshot?.managementUrl || null,
       };
     }
 
     const subscription = await this.findLatestCancelableSubscriptionForUser(this.stripe, userId);
- 
+    const activeEntitlement = this.validateWebEntitlementAgainstStripeSubscription(
+      userId,
+      entitlementSnapshot,
+      subscription,
+    );
+    const plan = activeEntitlement ? PlanType.PRO : PlanType.FREE;
     const origin = activeEntitlement?.origin || (subscription ? 'web' : null);
     const managementUrl = activeEntitlement?.managementUrl || null;
 
@@ -721,6 +727,48 @@ export class BillingService {
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
       currentPeriodEnd: this.getSubscriptionCurrentPeriodEnd(subscription),
     };
+  }
+
+  private validateWebEntitlementAgainstStripeSubscription(
+    userId: string,
+    entitlement: RevenueCatActiveEntitlementSnapshot | null,
+    subscription: Stripe.Subscription | null,
+  ) {
+    if (!entitlement || entitlement.origin !== 'web') {
+      return entitlement;
+    }
+    
+    if (!subscription) {
+      this.logger.warn(
+        `Ignoring RevenueCat web entitlement for user ${userId} because no matching Stripe subscription was found.`,
+      );
+      return null;
+    }
+    console.log('subscription', subscription.items);
+    const stripeProductIds = subscription.items.data
+      .map((item) => {
+        const product = item.price?.product;
+
+        if (typeof product === 'string' && product.length > 0) {
+          return product;
+        }
+
+        if (product && typeof product === 'object' && 'id' in product && typeof product.id === 'string') {
+          return product.id;
+        }
+
+        return null;
+      })
+      .filter((productId): productId is string => typeof productId === 'string' && productId.length > 0);
+
+    if (!entitlement.productIdentifier || !stripeProductIds.includes(entitlement.productIdentifier)) {
+      this.logger.warn(
+        `Ignoring RevenueCat web entitlement for user ${userId} because entitlement product ${entitlement.productIdentifier || 'unknown'} does not match Stripe subscription ${subscription.id}.`,
+      );
+      return null;
+    }
+
+    return entitlement;
   }
 
   private getSubscriptionCurrentPeriodEnd(subscription: Stripe.Subscription) {

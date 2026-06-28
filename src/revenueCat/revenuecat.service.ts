@@ -71,17 +71,7 @@ export class RevenueCatService {
     }
 
     try {
-      const data = await this.getSubscriberInfo(appUserId);
-      if (!data) {
-        return false;
-      }
-      // Navigate the response safely to find active entitlements
-      const activeEntitlements = data?.subscriber?.entitlements;
-      // If the specific entitlement exists in the 'active' object, return true
-      if (activeEntitlements && activeEntitlements[entitlementId]) {
-        return true;
-      }
-      return false;
+      return Boolean(await this.getActiveEntitlementSnapshot(appUserId, entitlementId));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed to check RevenueCat entitlements: ${message}`);
@@ -100,6 +90,7 @@ export class RevenueCatService {
 
     try {
       const data = await this.getSubscriberInfo(appUserId);
+
       if (!data) {
         return null;
       }
@@ -125,8 +116,16 @@ export class RevenueCatService {
         subscription?.expires_date
           || entitlement.expires_date,
       );
-
+      const origin = this.inferMembershipOrigin(managementUrl);
+   
       if (expiresDate && expiresDate.getTime() <= Date.now()) {
+        return null;
+      }
+        
+      if (origin === 'web' && !this.isTrustedWebEntitlementProduct(productIdentifier)) {
+        this.logger.warn(
+          `Ignoring RevenueCat web entitlement for user ${appUserId} because product ${productIdentifier || 'unknown'} is not a trusted Stripe price.`,
+        );
         return null;
       }
 
@@ -136,7 +135,7 @@ export class RevenueCatService {
         expiresDate,
         interval: this.inferSubscriptionInterval(productIdentifier, purchaseDate, expiresDate),
         managementUrl,
-        origin: this.inferMembershipOrigin(managementUrl),
+        origin,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -186,16 +185,27 @@ export class RevenueCatService {
       : 'web';
   }
 
+  private isTrustedWebEntitlementProduct(productIdentifier: string | null) {
+    if (!productIdentifier) {
+      return false;
+    }
+
+    return [
+      this.env.stripeProMonthlyProductId,
+      this.env.stripeProYearlyProductId,
+    ].includes(productIdentifier);
+  }
+
   private inferSubscriptionInterval(
     productIdentifier: string | null,
     purchaseDate: Date | null,
     expiresDate: Date | null,
   ): RevenueCatSubscriptionInterval | null {
-    if (productIdentifier === this.env.stripeProMonthlyPriceId) {
+    if (productIdentifier === this.env.stripeProMonthlyProductId) {
       return 'monthly';
     }
 
-    if (productIdentifier === this.env.stripeProYearlyPriceId) {
+    if (productIdentifier === this.env.stripeProYearlyProductId) {
       return 'yearly';
     }
 
