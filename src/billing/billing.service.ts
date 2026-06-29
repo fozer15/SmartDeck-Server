@@ -165,10 +165,10 @@ export class BillingService {
   }
 
   async getMembershipStatus(userId: string): Promise<MembershipStatus> {
-    const entitlementSnapshot = await this.revenueCat.getActiveEntitlementSnapshot(
-      userId,
-      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
-    );
+    const subscription = this.stripe
+      ? await this.findLatestCancelableSubscriptionForUser(this.stripe, userId)
+      : null;
+    const entitlementSnapshot = await this.getValidatedEntitlementSnapshot(userId, subscription);
     
     const fallbackCurrentPeriodEnd = entitlementSnapshot?.expiresDate
       ? Math.floor(entitlementSnapshot.expiresDate.getTime() / 1000)
@@ -178,28 +178,22 @@ export class BillingService {
       return {
         plan: entitlementSnapshot ? PlanType.PRO : PlanType.FREE,
         subscriptionId: null,
-        cancelAtPeriodEnd: false,
+        cancelAtPeriodEnd: Boolean(entitlementSnapshot?.cancelAtPeriodEnd),
         currentPeriodEnd: fallbackCurrentPeriodEnd,
         origin: entitlementSnapshot?.origin || null,
         managementUrl: entitlementSnapshot?.managementUrl || null,
       };
     }
 
-    const subscription = await this.findLatestCancelableSubscriptionForUser(this.stripe, userId);
-    const activeEntitlement = this.validateWebEntitlementAgainstStripeSubscription(
-      userId,
-      entitlementSnapshot,
-      subscription,
-    );
-    const plan = activeEntitlement ? PlanType.PRO : PlanType.FREE;
-    const origin = activeEntitlement?.origin || (subscription ? 'web' : null);
-    const managementUrl = activeEntitlement?.managementUrl || null;
+    const plan = entitlementSnapshot ? PlanType.PRO : PlanType.FREE;
+    const origin = entitlementSnapshot?.origin || (subscription ? 'web' : null);
+    const managementUrl = entitlementSnapshot?.managementUrl || null;
 
     if (!subscription) {
       return {
         plan,
         subscriptionId: null,
-        cancelAtPeriodEnd: false,
+        cancelAtPeriodEnd: Boolean(entitlementSnapshot?.cancelAtPeriodEnd),
         currentPeriodEnd: fallbackCurrentPeriodEnd,
         origin,
         managementUrl,
@@ -261,10 +255,7 @@ export class BillingService {
   }
 
   async resolvePlan(userId: string): Promise<PlanType> {
-    const hasProEntitlement = await this.revenueCat.hasActiveEntitlement(
-      userId,
-      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
-    );
+    const hasProEntitlement = Boolean(await this.getValidatedEntitlementSnapshot(userId));
 
     return hasProEntitlement ? PlanType.PRO : PlanType.FREE;
   }
@@ -485,10 +476,7 @@ export class BillingService {
   }
 
   private async getLatestYearlyPlanResetBoundary(userId: string, lastResetDate: Date | string | null | undefined) {
-    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
-      userId,
-      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
-    );
+    const activeEntitlement = await this.getValidatedEntitlementSnapshot(userId);
 
     if (!activeEntitlement || activeEntitlement.interval !== 'yearly') {
       return null;
@@ -518,19 +506,13 @@ export class BillingService {
   }
 
   private async getRevenueCatRenewalInterval(userId: string): Promise<RevenueCatRenewalInterval | null> {
-    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
-      userId,
-      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
-    );
+    const activeEntitlement = await this.getValidatedEntitlementSnapshot(userId);
 
     return activeEntitlement?.interval || null;
   }
 
   private async getRevenueCatEntitlementCycleStart(userId: string) {
-    const activeEntitlement = await this.revenueCat.getActiveEntitlementSnapshot(
-      userId,
-      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
-    );
+    const activeEntitlement = await this.getValidatedEntitlementSnapshot(userId);
 
     return activeEntitlement?.purchaseDate || null;
   }
@@ -729,6 +711,30 @@ export class BillingService {
     };
   }
 
+  private async getValidatedEntitlementSnapshot(
+    userId: string,
+    subscription?: Stripe.Subscription | null,
+  ): Promise<RevenueCatActiveEntitlementSnapshot | null> {
+    const entitlement = await this.revenueCat.getActiveEntitlementSnapshot(
+      userId,
+      APP_LIMITS.SUBSCRIPTIONS.PRO_ENTITLEMENT_ID,
+    );
+
+    if (!this.stripe) {
+      return entitlement;
+    }
+
+    const activeSubscription = subscription === undefined
+      ? await this.findLatestCancelableSubscriptionForUser(this.stripe, userId)
+      : subscription;
+
+    return this.validateWebEntitlementAgainstStripeSubscription(
+      userId,
+      entitlement,
+      activeSubscription,
+    );
+  }
+
   private validateWebEntitlementAgainstStripeSubscription(
     userId: string,
     entitlement: RevenueCatActiveEntitlementSnapshot | null,
@@ -744,7 +750,28 @@ export class BillingService {
       );
       return null;
     }
-    console.log('subscription', subscription.items);
+
+    const stripeProductId = this.getTrustedStripeProductIdentifier(subscription);
+    if (!stripeProductId) {
+      this.logger.warn(
+        `Ignoring RevenueCat web entitlement for user ${userId} because Stripe subscription ${subscription.id} does not contain a trusted SmartDeck product.`,
+      );
+      return null;
+    }
+
+    return {
+      ...entitlement,
+      productIdentifier: stripeProductId,
+      interval: this.getIntervalForStripeProductIdentifier(stripeProductId) || entitlement.interval,
+    };
+  }
+
+  private getTrustedStripeProductIdentifier(subscription: Stripe.Subscription) {
+    const trustedProductIds = new Set([
+      this.env.stripeProMonthlyProductId,
+      this.env.stripeProYearlyProductId,
+    ].filter((productId): productId is string => typeof productId === 'string' && productId.length > 0));
+
     const stripeProductIds = subscription.items.data
       .map((item) => {
         const product = item.price?.product;
@@ -761,14 +788,19 @@ export class BillingService {
       })
       .filter((productId): productId is string => typeof productId === 'string' && productId.length > 0);
 
-    if (!entitlement.productIdentifier || !stripeProductIds.includes(entitlement.productIdentifier)) {
-      this.logger.warn(
-        `Ignoring RevenueCat web entitlement for user ${userId} because entitlement product ${entitlement.productIdentifier || 'unknown'} does not match Stripe subscription ${subscription.id}.`,
-      );
-      return null;
+    return stripeProductIds.find((productId) => trustedProductIds.has(productId)) || null;
+  }
+
+  private getIntervalForStripeProductIdentifier(productIdentifier: string): RevenueCatRenewalInterval | null {
+    if (productIdentifier === this.env.stripeProMonthlyProductId) {
+      return 'monthly';
     }
 
-    return entitlement;
+    if (productIdentifier === this.env.stripeProYearlyProductId) {
+      return 'yearly';
+    }
+
+    return null;
   }
 
   private getSubscriptionCurrentPeriodEnd(subscription: Stripe.Subscription) {

@@ -9,8 +9,16 @@ export type RevenueCatActiveEntitlementSnapshot = {
   purchaseDate: Date | null;
   expiresDate: Date | null;
   interval: RevenueCatSubscriptionInterval | null;
+  cancelAtPeriodEnd: boolean;
   managementUrl: string | null;
   origin: MembershipOrigin;
+};
+
+type RevenueCatResolvedSubscription = {
+  productIdentifier: string | null;
+  purchaseDate: Date | null;
+  expiresDate: Date | null;
+  unsubscribeDetectedAt: Date | null;
 };
 
 @Injectable()
@@ -90,7 +98,7 @@ export class RevenueCatService {
 
     try {
       const data = await this.getSubscriberInfo(appUserId);
-
+    
       if (!data) {
         return null;
       }
@@ -100,40 +108,29 @@ export class RevenueCatService {
         return null;
       }
 
-      const productIdentifier = typeof entitlement.product_identifier === 'string'
-        ? entitlement.product_identifier
-        : null;
-      const subscription = productIdentifier
-        ? data?.subscriber?.subscriptions?.[productIdentifier]
-        : null;
       const managementUrl = this.parseManagementUrl(data?.subscriber?.management_url);
-      const purchaseDate = this.parseRevenueCatDate(
-        subscription?.purchase_date
-          || entitlement.purchase_date
-          || subscription?.original_purchase_date,
-      );
-      const expiresDate = this.parseRevenueCatDate(
-        subscription?.expires_date
-          || entitlement.expires_date,
-      );
       const origin = this.inferMembershipOrigin(managementUrl);
+      const resolvedSubscription = this.resolveEntitlementSubscriptionFromProduct(
+        data?.subscriber,
+        entitlement.product_identifier,
+        entitlement,
+      );
+      const productIdentifier = resolvedSubscription.productIdentifier;
+      const purchaseDate = resolvedSubscription.purchaseDate;
+      const expiresDate = resolvedSubscription.expiresDate;
+      const unsubscribeDetectedAt = resolvedSubscription.unsubscribeDetectedAt;
+      const cancelAtPeriodEnd = origin === 'ios' && Boolean(unsubscribeDetectedAt);
    
       if (expiresDate && expiresDate.getTime() <= Date.now()) {
         return null;
       }
         
-      if (origin === 'web' && !this.isTrustedWebEntitlementProduct(productIdentifier)) {
-        this.logger.warn(
-          `Ignoring RevenueCat web entitlement for user ${appUserId} because product ${productIdentifier || 'unknown'} is not a trusted Stripe price.`,
-        );
-        return null;
-      }
-
       return {
         productIdentifier,
         purchaseDate,
         expiresDate,
         interval: this.inferSubscriptionInterval(productIdentifier, purchaseDate, expiresDate),
+        cancelAtPeriodEnd,
         managementUrl,
         origin,
       };
@@ -185,15 +182,31 @@ export class RevenueCatService {
       : 'web';
   }
 
-  private isTrustedWebEntitlementProduct(productIdentifier: string | null) {
-    if (!productIdentifier) {
-      return false;
-    }
+  private resolveEntitlementSubscriptionFromProduct(
+    subscriber: any,
+    rawProductIdentifier: unknown,
+    entitlement: any,
+  ): RevenueCatResolvedSubscription {
+    const productIdentifier = typeof rawProductIdentifier === 'string'
+      ? rawProductIdentifier
+      : null;
+    const subscription = productIdentifier
+      ? subscriber?.subscriptions?.[productIdentifier]
+      : null;
 
-    return [
-      this.env.stripeProMonthlyProductId,
-      this.env.stripeProYearlyProductId,
-    ].includes(productIdentifier);
+    return {
+      productIdentifier,
+      purchaseDate: this.parseRevenueCatDate(
+        subscription?.purchase_date
+          || entitlement?.purchase_date
+          || subscription?.original_purchase_date,
+      ),
+      expiresDate: this.parseRevenueCatDate(
+        subscription?.expires_date
+          || entitlement?.expires_date,
+      ),
+      unsubscribeDetectedAt: this.parseRevenueCatDate(subscription?.unsubscribe_detected_at),
+    };
   }
 
   private inferSubscriptionInterval(
