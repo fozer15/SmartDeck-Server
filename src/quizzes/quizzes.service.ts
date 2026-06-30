@@ -78,6 +78,8 @@ export class QuizzesService {
   private readonly defaultBatchSize = 5;
   private readonly maxBatchSize = 50;
   private readonly shortAnswerPassingScore = 70;
+  private readonly quizGenerationSchemaRetryAttempts = 3;
+  private readonly maxQuizGenerationIssuesToReport = 5;
 
   private readonly systemPrompt = `You are an expert educational content creator. Analyze the provided study source material and generate quiz questions categorized by Bloom's Taxonomy cognitive tiers:
 
@@ -90,6 +92,7 @@ Also compute a Rigor Index (0-100): a weighted score where recall questions cont
 Guidelines:
 - Structured user preferences are authoritative. If question count, tier preference, or format preference is provided, follow it exactly.
 - If no user preference is provided, default to 8 questions with a balanced mix of tiers and formats.
+- When generating multiple questions, distribute them as evenly as the material allows across the full source. Cover the beginning, middle, and end of the material instead of clustering questions around a single section.
 - If the source includes images or scanned pages, extract the clearly visible text faithfully and base questions only on information that is actually present or directly inferable from the source.
 - Do not invent missing, unreadable, or obscured text from an image.
 - Use one of these JSON format values for each question: multiple_choice, flashcard, short_answer
@@ -97,7 +100,9 @@ Guidelines:
 - For flashcard and short_answer: do not include options
 - Provide a clear explanation for each answer
 - Provide a deck-level gradingContext that summarizes the key concepts, acceptable paraphrases, and what matters most when grading answers for this deck
-- Provide a gradingContext for each question that captures the specific facts or reasoning needed to grade that question without re-reading the original source`;
+- Provide a gradingContext for each question that captures the specific facts or reasoning needed to grade that question without re-reading the original source
+- STRICT WARNING: if even one question is missing a required field, uses an invalid enum value, has the wrong option count, or otherwise fails the JSON schema, the entire response will be rejected and retried
+- Before replying, validate every question and the full JSON payload so the response matches the required schema exactly`;
 
   constructor(
     private prisma: PrismaService,
@@ -189,6 +194,103 @@ Guidelines:
     }
 
     return this.generateFromFiles(userId, dto);
+  }
+
+  private isRetryableQuizGenerationSchemaError(error: unknown) {
+    return error instanceof SyntaxError || error instanceof z.ZodError;
+  }
+
+  private summarizeQuizGenerationSchemaError(error: unknown) {
+    if (error instanceof z.ZodError) {
+      return error.issues
+        .slice(0, this.maxQuizGenerationIssuesToReport)
+        .map((issue) => `${issue.path.join('.') || 'root'}: ${issue.message}`)
+        .join('; ');
+    }
+
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+
+    return 'Unknown structured-output validation error.';
+  }
+
+  private buildQuizGenerationRetryInstruction(error: unknown) {
+    const errorSummary = this.summarizeQuizGenerationSchemaError(error);
+
+    return [
+      'The previous response was rejected because it did not satisfy the required JSON schema exactly.',
+      `Validation failure summary: ${errorSummary}`,
+      'Return the entire response again as valid JSON only.',
+      'Recheck every question before replying:',
+      '- Every question must include format, tier, topic, question, correctAnswer, explanation, and gradingContext.',
+      '- multiple_choice questions must contain exactly 4 options.',
+      '- flashcard and short_answer questions must not include options.',
+      '- tier must be one of recall, application, or analysis.',
+      '- rigorIndex must be a number between 0 and 100.',
+      '- Distribute questions evenly across the full source material instead of clustering on one part.',
+    ].join('\n');
+  }
+
+  private buildQuizGenerationValidationFailure(error: unknown) {
+    const errorSummary = this.summarizeQuizGenerationSchemaError(error);
+
+    return new InternalServerErrorException(
+      `Quiz generation returned invalid structured data after ${this.quizGenerationSchemaRetryAttempts} attempts. ${errorSummary}`,
+    );
+  }
+
+  private parseGeneratedQuizResponse(responseText?: string | null) {
+    const rawText = String(responseText || '').trim();
+
+    if (!rawText) {
+      throw new SyntaxError('Model returned an empty JSON response.');
+    }
+
+    return quizResponseSchema.parse(this.normalizeGeneratedQuizData(JSON.parse(rawText)));
+  }
+
+  private async generateQuizDataWithRetries(
+    buildContents: (retryInstruction?: string) => Array<{ parts: Array<Record<string, unknown>> }>,
+    sourceLabel: string,
+  ) {
+    let retryInstruction: string | undefined;
+    let lastValidationError: unknown;
+
+    for (let attempt = 1; attempt <= this.quizGenerationSchemaRetryAttempts; attempt += 1) {
+      const response = await this.gemini.generateContent({
+        contents: buildContents(retryInstruction),
+        config: {
+          responseMimeType: 'application/json',
+          responseJsonSchema: zodToJsonSchema(quizResponseSchema as any),
+        },
+      });
+
+      try {
+        return this.parseGeneratedQuizResponse(response.text);
+      } catch (error) {
+        if (!this.isRetryableQuizGenerationSchemaError(error)) {
+          throw error;
+        }
+
+        lastValidationError = error;
+        const summary = this.summarizeQuizGenerationSchemaError(error);
+
+        if (attempt >= this.quizGenerationSchemaRetryAttempts) {
+          this.logger.error(
+            `Quiz generation (${sourceLabel}) returned invalid structured data after ${attempt} attempts: ${summary}`,
+          );
+          throw this.buildQuizGenerationValidationFailure(error);
+        }
+
+        this.logger.warn(
+          `Retrying quiz generation (${sourceLabel}) after invalid structured response on attempt ${attempt}/${this.quizGenerationSchemaRetryAttempts}: ${summary}`,
+        );
+        retryInstruction = this.buildQuizGenerationRetryInstruction(error);
+      }
+    }
+
+    throw this.buildQuizGenerationValidationFailure(lastValidationError);
   }
 
   private toAvatarUrl(userId?: string | null, value?: string | null) {
@@ -692,22 +794,17 @@ Guidelines:
       const prompt = this.buildPrompt(dto, generationLanguage);
 
       // Generate quiz from all files
-      const response = await this.gemini.generateContent({
-        contents: [
+      const quizData = await this.generateQuizDataWithRetries(
+        (retryInstruction) => [
           {
             parts: [
-              ...uploadedFiles.map(f => ({ fileData: { mimeType: f.mimeType, fileUri: f.uri } })),
-              { text: prompt },
+              ...uploadedFiles.map((file) => ({ fileData: { mimeType: file.mimeType, fileUri: file.uri } })),
+              { text: retryInstruction ? `${prompt}\n\n${retryInstruction}` : prompt },
             ],
           },
         ],
-        config: {
-          responseMimeType: 'application/json',
-          responseJsonSchema: zodToJsonSchema(quizResponseSchema as any),
-        },
-      });
-
-      const quizData = quizResponseSchema.parse(this.normalizeGeneratedQuizData(JSON.parse(response.text)));
+        'files',
+      );
       const generatedQuestionCount = quizData.quizzes.length;
       const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
       const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
@@ -799,15 +896,10 @@ Guidelines:
       const prompt = this.buildPrompt(dto, generationLanguage);
       const quizPrompt = `The following is a transcript from an audio recording. Use it as the source material to generate quiz questions.\n\n--- TRANSCRIPT START ---\n${transcript}\n--- TRANSCRIPT END ---\n\n${prompt}`;
 
-      const quizResponse = await this.gemini.generateContent({
-        contents: [{ parts: [{ text: quizPrompt }] }],
-        config: {
-          responseMimeType: 'application/json',
-          responseJsonSchema: zodToJsonSchema(quizResponseSchema as any),
-        },
-      });
-
-      const quizData = quizResponseSchema.parse(this.normalizeGeneratedQuizData(JSON.parse(quizResponse.text)));
+      const quizData = await this.generateQuizDataWithRetries(
+        (retryInstruction) => [{ parts: [{ text: retryInstruction ? `${quizPrompt}\n\n${retryInstruction}` : quizPrompt }] }],
+        'audio transcript',
+      );
       const generatedQuestionCount = quizData.quizzes.length;
       const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
       const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
@@ -867,15 +959,10 @@ Guidelines:
     const prompt = this.buildPrompt(dto, generationLanguage);
     const fullPrompt = `The following is study material pasted by the user (notes, lecture text, article, etc.). Use it as the sole source material to generate quiz questions. Do not invent facts that are not supported by the text.\n\n--- USER NOTES START ---\n${sourceText}\n--- USER NOTES END ---\n\n${prompt}`;
 
-    const quizResponse = await this.gemini.generateContent({
-      contents: [{ parts: [{ text: fullPrompt }] }],
-      config: {
-        responseMimeType: 'application/json',
-        responseJsonSchema: zodToJsonSchema(quizResponseSchema as any),
-      },
-    });
-
-    const quizData = quizResponseSchema.parse(this.normalizeGeneratedQuizData(JSON.parse(quizResponse.text)));
+    const quizData = await this.generateQuizDataWithRetries(
+      (retryInstruction) => [{ parts: [{ text: retryInstruction ? `${fullPrompt}\n\n${retryInstruction}` : fullPrompt }] }],
+      'text',
+    );
     const generatedQuestionCount = quizData.quizzes.length;
     const generatedTiers = Array.from(new Set(quizData.quizzes.map((q) => q.tier)));
     const generatedFormats = Array.from(new Set(quizData.quizzes.map((q) => q.format)));
@@ -939,6 +1026,7 @@ Guidelines:
 
       if (dto.questionCount) {
         lines.push(`- Generate exactly ${dto.questionCount} questions.`);
+        lines.push(`- Spread those ${dto.questionCount} questions as evenly as possible across the full material.`);
       }
 
       if (dto.questionTier) {
@@ -961,6 +1049,11 @@ Guidelines:
     if (dto.instructions?.trim()) {
       lines.push('', `Additional instructions: ${dto.instructions.trim()}`);
     }
+
+    lines.push(
+      '',
+      'Final validation requirement: before returning JSON, verify that every generated question satisfies the required schema exactly. If any single question is invalid, regenerate the full response before replying.',
+    );
 
     return lines.join('\n');
   }
