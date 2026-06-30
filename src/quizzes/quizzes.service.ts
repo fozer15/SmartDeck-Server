@@ -80,6 +80,7 @@ export class QuizzesService {
   private readonly shortAnswerPassingScore = 70;
   private readonly quizGenerationSchemaRetryAttempts = 3;
   private readonly maxQuizGenerationIssuesToReport = 5;
+  private readonly quizGenerationTerminalVisibilityWindowMs = 10 * 60 * 1000;
 
   private readonly systemPrompt = `You are an expert educational content creator. Analyze the provided study source material and generate quiz questions categorized by Bloom's Taxonomy cognitive tiers:
 
@@ -665,8 +666,26 @@ Guidelines:
   }
 
   async listGenerationJobs(userId: string) {
+    const terminalVisibilityCutoff = new Date(Date.now() - this.quizGenerationTerminalVisibilityWindowMs);
     const jobs = await this.prisma.quizGenerationJob.findMany({
-      where: { userId },
+      where: {
+        userId,
+        OR: [
+          {
+            status: {
+              in: [QuizGenerationJobStatus.queued, QuizGenerationJobStatus.processing],
+            },
+          },
+          {
+            status: {
+              in: [QuizGenerationJobStatus.completed, QuizGenerationJobStatus.failed, QuizGenerationJobStatus.cancelled],
+            },
+            updatedAt: {
+              gte: terminalVisibilityCutoff,
+            },
+          },
+        ],
+      },
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
