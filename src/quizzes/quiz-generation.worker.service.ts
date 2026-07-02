@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { ConnectionOptions } from 'bullmq';
 import { Worker } from 'bullmq';
 import { EnvService } from '../env/env.service';
@@ -6,7 +6,7 @@ import { QuizzesService } from './quizzes.service';
 import { QUIZ_GENERATION_QUEUE_NAME, QuizGenerationQueueData } from './quiz-generation.constants';
 
 @Injectable()
-export class QuizGenerationWorkerService implements OnModuleDestroy {
+export class QuizGenerationWorkerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(QuizGenerationWorkerService.name);
   private readonly connection: ConnectionOptions;
   private worker: Worker<QuizGenerationQueueData> | null = null;
@@ -28,6 +28,20 @@ export class QuizGenerationWorkerService implements OnModuleDestroy {
     };
   }
 
+  /**
+   * Auto-start the worker in development so a single `npm run start:dev`
+   * runs both the HTTP API and the background job processor. In production
+   * we skip this and rely on the dedicated `worker.ts` entry point (see
+   * ecosystem.config.js) so job concurrency isn't multiplied across the
+   * clustered API instances.
+   */
+  async onModuleInit() {
+    if (process.env.NODE_ENV === 'production') {
+      return;
+    }
+    await this.start();
+  }
+
   async start() {
     if (this.worker) {
       return;
@@ -41,6 +55,13 @@ export class QuizGenerationWorkerService implements OnModuleDestroy {
       {
         connection: this.connection,
         concurrency: this.env.quizGenerationWorkerConcurrency,
+        // Gemini generations can run 60–120 s. The default 30 s lock would
+        // cause BullMQ to re-deliver the job to a second worker while the
+        // first is still generating → duplicate decks + rows stuck at
+        // `processing`. Give ourselves plenty of headroom.
+        lockDuration: 180_000,   // 3 min — must exceed longest expected job
+        stalledInterval: 60_000, // check for stalled jobs less aggressively
+        maxStalledCount: 0,      // never auto-re-deliver stalled jobs
       },
     );
 

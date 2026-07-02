@@ -197,6 +197,24 @@ Guidelines:
     return this.generateFromFiles(userId, dto);
   }
 
+  /**
+   * Fire-and-forget cleanup of uploaded Gemini files. Each delete is a slow
+   * HTTP round-trip to Google and the user's response doesn't depend on it —
+   * we run them in parallel in the background so the job can flip to
+   * `completed` immediately after Gemini returns.
+   */
+  private cleanupGeminiFilesInBackground(fileNames: string[]) {
+    if (!fileNames.length) {
+      return;
+    }
+
+    void Promise.allSettled(
+      fileNames.map((name) => this.gemini.deleteFile({ name })),
+    ).catch((error) => {
+      this.logger.warn(`Background Gemini file cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   private isRetryableQuizGenerationSchemaError(error: unknown) {
     return error instanceof SyntaxError || error instanceof z.ZodError;
   }
@@ -706,6 +724,9 @@ Guidelines:
   }
 
   async processGenerationJob(jobId: string) {
+    // Atomic guard: only pick up jobs that are still `queued`. If two workers
+    // ever grab the same job (stalled re-delivery, retries, etc.) exactly one
+    // will get transition.count === 1; the rest see 0 and exit cleanly.
     const transition = await this.prisma.quizGenerationJob.updateMany({
       where: {
         id: jobId,
@@ -723,20 +744,29 @@ Guidelines:
     });
 
     if (transition.count === 0) {
+      const current = await this.prisma.quizGenerationJob.findUnique({
+        where: { id: jobId },
+        select: { status: true },
+      });
+      this.logger.warn(
+        `Skipping generation job ${jobId}: could not transition from queued (current status=${current?.status ?? 'missing'}).`,
+      );
       return;
     }
 
-    const job = await this.prisma.quizGenerationJob.findUnique({
-      where: { id: jobId },
-    });
-
-    if (!job) {
-      throw new NotFoundException('Generation job not found');
-    }
-
-    const dto = this.parseGenerationJobPayload(job.payload);
-
+    // Wrap the entire post-transition path so the row can never leak in the
+    // `processing` state — even if the DB lookup or payload parsing throws.
+    let job: Awaited<ReturnType<typeof this.prisma.quizGenerationJob.findUnique>> = null;
     try {
+      job = await this.prisma.quizGenerationJob.findUnique({
+        where: { id: jobId },
+      });
+
+      if (!job) {
+        throw new NotFoundException('Generation job not found');
+      }
+
+      const dto = this.parseGenerationJobPayload(job.payload);
       const createdDeck = await this.buildDeckFromSource(job.userId, dto);
 
       try {
@@ -757,18 +787,27 @@ Guidelines:
           errorMessage: null,
         },
       });
+
+      this.logger.log(`Completed generation job ${jobId} → deck ${createdDeck.id}`);
     } catch (error) {
       const message = this.getGenerationErrorMessage(error);
-      this.logger.error(`Quiz generation job ${job.id} failed: ${message}`);
+      this.logger.error(
+        `Quiz generation job ${jobId} failed: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
 
       await this.prisma.quizGenerationJob.update({
-        where: { id: job.id },
+        where: { id: jobId },
         data: {
           status: QuizGenerationJobStatus.failed,
           errorMessage: message,
           completedAt: new Date(),
         },
-      }).catch(() => {});
+      }).catch((updateError) => {
+        this.logger.error(
+          `Failed to mark job ${jobId} as failed: ${updateError instanceof Error ? updateError.message : String(updateError)}`,
+        );
+      });
 
       throw error;
     }
@@ -865,16 +904,16 @@ Guidelines:
 
       return this.withDeckFilePublicUrls(createdDeck);
     } finally {
-      // Cleanup temp files
+      // Cleanup temp files (synchronous and fast, keep on critical path)
       for (const tempPath of tempPaths) {
         if (fs.existsSync(tempPath)) {
           fs.unlinkSync(tempPath);
         }
       }
-      // Cleanup uploaded files from Gemini
-      for (const uploadedFile of uploadedFiles) {
-        await this.gemini.deleteFile({ name: uploadedFile.name }).catch(() => {});
-      }
+      // Gemini file deletion is a slow HTTP round-trip per file and is not
+      // required for the user's response — fire in parallel in the background
+      // so the job flips to `completed` immediately.
+      this.cleanupGeminiFilesInBackground(uploadedFiles.map((f) => f.name));
     }
   }
 
@@ -963,7 +1002,7 @@ Guidelines:
         fs.unlinkSync(tempPath);
       }
       if (uploadedFileName) {
-        await this.gemini.deleteFile({ name: uploadedFileName }).catch(() => {});
+        this.cleanupGeminiFilesInBackground([uploadedFileName]);
       }
     }
   }
@@ -1917,9 +1956,7 @@ Guidelines:
         }
       }
 
-      for (const file of uploadedFiles) {
-        await this.gemini.deleteFile({ name: file.name }).catch(() => {});
-      }
+      this.cleanupGeminiFilesInBackground(uploadedFiles.map((file) => file.name));
     }
   }
 

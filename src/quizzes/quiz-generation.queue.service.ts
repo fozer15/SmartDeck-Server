@@ -29,7 +29,10 @@ export class QuizGenerationQueueService implements OnModuleDestroy {
     this.queue = new Queue<QuizGenerationQueueData>(QUIZ_GENERATION_QUEUE_NAME, {
       connection: this.connection,
       defaultJobOptions: {
-        attempts: 2,
+        // No automatic retries: quiz generation is not idempotent (creates
+        // decks, consumes credits, calls Gemini). Failures are marked in the
+        // DB and the user can retry from the UI.
+        attempts: 1,
         removeOnComplete: 1000,
         removeOnFail: 1000,
       },
