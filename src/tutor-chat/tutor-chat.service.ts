@@ -682,6 +682,23 @@ export class TutorChatService {
       .map((line) => `- ${line}`)
       .join('\n');
 
+    // Grounding rules stop the model from inventing a topic when the user's
+    // request is vague ("explain a difficult concept simply", "quiz me",
+    // "help me study"). Without these the model picks a random concept
+    // (classically "opportunity cost") and answers as if the user asked
+    // about it — which feels dishonest and wastes credits.
+    const groundingGuidelines = [
+      'Ground every answer in ONE of these sources, in this priority order: (1) files attached in the CURRENT turn, (2) files referenced in prior turns of this conversation, (3) the deck analytics context if present, (4) something the user explicitly named in this or a previous message.',
+      'If none of those sources tell you WHAT the user wants to discuss, do NOT invent a topic. Ask a short clarifying question instead (e.g. "Which concept from your notes should we tackle?" or "Which topic from the deck feels hardest?").',
+      'Never fabricate topics, examples, statistics, quotes, page numbers, or citations. If a fact is not visible in the sources above and you are not certain, say you are not sure rather than guessing.',
+      'When the user gives a generic instruction ("explain something difficult", "quiz me", "help me"), treat it as a REQUEST FOR DIRECTION, not a request to pick for them. Offer 2-3 concrete options drawn from the actual sources and let the user choose.',
+      'When a deck is attached, prefer topics/questions the analytics show the user actually struggled with over topics you find interesting.',
+      'If the user asks a question you genuinely cannot answer from the available context, say so plainly in one sentence — do not paper over it with plausible-sounding filler.',
+      'Do not restate the analytics numbers back to the user unless they asked; use them silently to pick what to talk about.',
+    ]
+      .map((line) => `- ${line}`)
+      .join('\n');
+
     // Formatting is intentionally separate so we can tune it independently of
     // tone/behavior. The client renders responses as Markdown, so the model
     // MUST emit valid Markdown (bold, italics, bullets, tables, fenced code)
@@ -704,6 +721,11 @@ export class TutorChatService {
 
     if (!analytics) {
       return `You are a friendly, encouraging AI study tutor. The student may attach PDFs or images (e.g. lecture slides, textbook pages, handwritten notes) — when they do, treat those materials as authoritative source content for that turn. There is no specific deck attached to this conversation, so respond as a general study companion.
+
+If the student has not shared any material and has not named a topic, DO NOT pick one for them. Ask what they want to study.
+
+Grounding:
+${groundingGuidelines}
 
 Guidelines:
 ${sharedGuidelines}
@@ -743,6 +765,9 @@ ${analytics.topicStats.map((t) => `  ${t.name}: ${t.accuracy}% accuracy (${t.cor
 
 Questions the student struggled with (accuracy < 60%):
 ${strugglingQuestions}
+
+Grounding:
+${groundingGuidelines}
 
 Guidelines:
 ${sharedGuidelines}
