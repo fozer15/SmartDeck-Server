@@ -62,6 +62,7 @@ model UploadedFile {
   size         Int
   createdAt    DateTime        @default(now())
   quizzes      GeneratedQuiz[] 
+  tutorAttachments TutorMessageAttachment[]
 }
 
 model GeneratedQuiz {
@@ -118,19 +119,29 @@ model TutorConversation {
   id        String         @id @default(cuid())
   userId    String
   user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  quizId    String
-  quiz      GeneratedQuiz  @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  
-  // Track system contexts or metadata if the AI needs an overarching summary 
+
+  // Deck context is OPTIONAL — a user can start a standalone tutor chat
+  // without importing a deck. When the deck is later deleted we don't want
+  // to nuke the conversation, so we detach it instead of cascading.
+  quizId    String?
+  quiz      GeneratedQuiz? @relation(fields: [quizId], references: [id], onDelete: SetNull)
+
+  // Human-readable label shown in the chat sidebar. Auto-derived from the
+  // first user message when not explicitly set by the user.
+  title     String?
+
+  // Track system contexts or metadata if the AI needs an overarching summary
   summary   String?        // Optional: LLM-generated headline of what was discussed
-  
+
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
   messages  TutorMessage[]
 
-  // Ensures a clean 1:1 mapping if a user has exactly one running chat session per deck.
-  // If you want history lines (multiple independent chats per deck), remove @@unique and use @@index instead.
-  @@unique([userId, quizId])
+  // Users can have MANY conversations (with or without a deck), so the
+  // legacy @@unique([userId, quizId]) is gone. We keep hot-path indexes:
+  //  - list conversations for a user newest-first
+  //  - filter conversations attached to a specific deck
+  @@index([userId, updatedAt])
   @@index([userId])
   @@index([quizId])
 }
@@ -168,8 +179,31 @@ model TutorMessage {
   
   createdAt      DateTime          @default(now())
 
+  attachments    TutorMessageAttachment[]
+
   // Fast historical lookups inside the chat log window
   @@index([conversationId, createdAt])
+}
+
+/// A file (PDF or image) the user attached to a specific tutor message.
+/// We reference the existing UploadedFile so the same signed-upload flow is reused.
+model TutorMessageAttachment {
+  id         String        @id @default(cuid())
+  messageId  String
+  message    TutorMessage  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileId     String
+  file       UploadedFile  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  // Denormalized snapshot so history reads don't need to join UploadedFile
+  originalName String
+  mimeType     String
+  size         Int
+  pageCount    Int?          // Only meaningful for PDFs
+
+  createdAt   DateTime       @default(now())
+
+  @@index([messageId])
+  @@index([fileId])
 }
 
 enum QuestionTier {

@@ -12,6 +12,8 @@ import { QuizGenerationWorkerService } from './quiz-generation.worker.service';
   imports: [FilesModule, AuthModule, RevenueCatModule, BillingModule],
   controllers: [QuizzesController],
   providers: [QuizzesService, QuizGenerationQueueService, QuizGenerationWorkerService],
-  exports: [QuizGenerationWorkerService],
+  // Export QuizzesService so TutorChatModule can reuse `getDeckAnalytics`
+  // when a conversation has a deck attached.
+  exports: [QuizGenerationWorkerService, QuizzesService],
 })
 export class QuizzesModule {}

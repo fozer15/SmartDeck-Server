@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Post, Patch, Param, Body, UseGuards, Req, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, UseGuards, Req, Delete, Query } from '@nestjs/common';
 import { QuizzesService } from './quizzes.service';
 import { GenerateQuizDto } from './dto/generate-quiz.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -185,32 +185,6 @@ export class QuizzesController {
   @Get(':quizId/likes')
   getDeckLikes(@Param('quizId') quizId: string, @Req() req: any) {
     return this.quizzesService.getDeckLikesForOwner(req.user.uid, quizId);
-  }
-
- @Get(':quizId/tutor-chat')
-  getTutorHistory(
-    @Param('quizId') quizId: string,
-    @Req() req: any,
-    @Query('cursor') cursor?: string,
-    @Query('limit') limit?: string,
-  ) {
-    const parsedLimit = Number(limit) > 0 ? Number(limit) : 20; // Default to 20 messages per chunk
-    return this.quizzesService.getTutorChatHistory(req.user.uid, quizId, cursor, parsedLimit);
-  }
-
-  @Delete(':quizId/tutor-chat')
-  clearTutorHistory(@Param('quizId') quizId: string, @Req() req: any) {
-    return this.quizzesService.clearTutorChatHistory(req.user.uid, quizId);
-  }
-
-  @Post(':quizId/tutor-chat')
-  async tutorChat(
-    @Param('quizId') quizId: string,
-    @Req() req: any,
-    @Body() body: { text: string }, // Strictly expect only the text
-  ) {
-    // Call your service function with just the clean text
-    return this.quizzesService.tutorChat(req.user.uid, quizId, body.text.trim());
   }
 
   @Get(':quizId')
