@@ -10,6 +10,7 @@ export enum CreditCostType {
   QUIZ_GENERATION = 'QUIZ_GENERATION',
   TUTOR_CHAT_MESSAGE = 'TUTOR_CHAT_MESSAGE',
   TEXT_CHARACTERS = 'TEXT_CHARACTERS',
+  SOLVE = 'SOLVE',
 }
 
 type CreditFactor = {
@@ -48,6 +49,9 @@ export const APP_LIMITS = {
     [CreditCostType.QUIZ_GENERATION]: { credits: 15, unitSize: 1, minimumCharge: 15 },
     [CreditCostType.TUTOR_CHAT_MESSAGE]: { credits: 3, unitSize: 1, minimumCharge: 3 },
     [CreditCostType.TEXT_CHARACTERS]: { credits: 1, unitSize: 2000, minimumCharge: 1 },
+    // SOLVE costs the same as quiz generation — it calls Gemini with potentially
+    // multiple images and produces a long-form structured response.
+    [CreditCostType.SOLVE]: { credits: 15, unitSize: 1, minimumCharge: 15 },
   } satisfies Record<CreditCostType, CreditFactor>,
 } as const;
 

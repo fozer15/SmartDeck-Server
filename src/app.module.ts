@@ -8,6 +8,7 @@ import { BillingModule } from './billing/billing.module';
 import { FilesModule } from './files/files.module';
 import { QuizzesModule } from './quizzes/quizzes.module';
 import { TutorChatModule } from './tutor-chat/tutor-chat.module';
+import { SolveModule } from './solve/solve.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { TutorChatModule } from './tutor-chat/tutor-chat.module';
     FilesModule,
     QuizzesModule,
     TutorChatModule,
+    SolveModule,
   ],
 })
 export class AppModule {}
