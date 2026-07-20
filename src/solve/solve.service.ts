@@ -3,21 +3,21 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { SolveJobStatus } from '@prisma/client';
 
 import { BillingService } from '../billing/billing.service';
 import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
 import { GeminiService } from '../env/gemini.service';
 import { FilesService } from '../files/files.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SolveJobQueueService } from './solve-job.queue.service';
 
 // ─── Credit cost ─────────────────────────────────────────────────────────────
-// One SOLVE call = 15 credits (same as QUIZ_GENERATION), regardless of
-// the number of images in the batch. The flat rate keeps billing predictable
-// and reflects the fact that the model call happens once per request.
 const SOLVE_CREDIT_COST = calculateCreditsForUnits(CreditCostType.SOLVE, 1);
 
 // ─── Gemini system instruction ────────────────────────────────────────────────
@@ -41,32 +41,36 @@ const SOLVE_SYSTEM_INSTRUCTION = `You are an expert academic tutor and problem s
 ## Subject-specific guidance
 
 ### STEM (mathematics, physics, chemistry, statistics, computer science)
-1. **Identify the problem type** in one sentence (e.g. "This is a quadratic equation in standard form.").
+1. **Identify the problem type** in one sentence.
 2. **State the approach / theorem / formula** you will use, with a brief justification.
-3. **Work through each step** in numbered order:
-   - Show the formula or rule applied.
-   - Show the substitution.
-   - Show the simplification.
-   - Explain *why* each transformation is valid (don't just show algebra).
+3. **Work through each step** in numbered order: show formula, substitution, simplification, and explain *why* each step is valid.
 4. **Box or clearly label the final answer** using a display LaTeX block and a bold "**Answer:**" prefix.
 5. If there are multiple parts (a, b, c …), handle each under its own heading.
-6. After the solution, add a short **"Key concept"** note (1–2 sentences) that the student can use to recognize this problem type in future.
+6. After the solution, add a short **"Key concept"** note (1–2 sentences).
 
 ### Biology & life sciences
-1. **Identify the topic** (e.g. "This question is about cellular respiration — specifically the role of ATP synthase.").
-2. Give a **conceptual explanation** using clear language: define terms, describe processes, explain cause-and-effect relationships.
-3. Use **headings, bullet points, and short comparisons** to organize complex information.
-4. Only use LaTeX if an actual equation is required (e.g. photosynthesis or cellular respiration balanced equations).
+1. **Identify the topic**.
+2. Give a **conceptual explanation**: define terms, describe processes, explain cause-and-effect.
+3. Use **headings, bullet points, and short comparisons**.
+4. Only use LaTeX if an actual equation is required.
 5. End with a **"Key takeaway"** — one sentence the student should memorize.
 
 ### General / mixed / unknown subject
-- If the subject is unclear, identify it first, then follow the STEM or biology guidance above as appropriate.
-- If the image shows an essay question or comprehension question, provide a model answer with a clear structure (introduction, points, conclusion) and explain the reasoning.
+- Identify the subject first, then follow the STEM or biology guidance above.
+- For essay or comprehension questions, provide a model answer with clear structure and reasoning.
 
 ## Tone
 - Be direct and educational — you are explaining, not chatting.
 - Never say "Great question!" or pad the answer with filler.
-- If the student's existing work in the image contains an error, point it out kindly and explain why it is wrong before showing the correct approach.`;
+- If the student's existing work contains an error, point it out kindly and explain why it is wrong before showing the correct approach.`;
+
+// ─── Title-generation prompt ──────────────────────────────────────────────────
+const TITLE_SYSTEM_INSTRUCTION = `You generate ultra-short titles for academic problem solutions.
+Rules:
+- Maximum 8 words.
+- Capture the subject and core concept (e.g. "Quadratic Formula – Projectile Motion", "Cellular Respiration: ATP Synthesis", "Integration by Parts – Trigonometric Integral").
+- No LaTeX, no markdown, no punctuation other than a dash or colon to separate subject from concept.
+- Output ONLY the title string — no explanation, no quotes.`;
 
 @Injectable()
 export class SolveService {
@@ -77,22 +81,25 @@ export class SolveService {
     private readonly filesService: FilesService,
     private readonly billing: BillingService,
     private readonly gemini: GeminiService,
+    private readonly queue: SolveJobQueueService,
   ) {}
 
-  async solve(
-    userId: string,
-    input: { fileIds: string[]; note?: string },
-  ) {
+  // ─── Enqueue ───────────────────────────────────────────────────────────────
+
+  async enqueueSolveJob(userId: string, input: { fileIds: string[]; note?: string }) {
     const uniqueFileIds = Array.from(new Set(input.fileIds.filter(Boolean)));
 
     if (uniqueFileIds.length === 0) {
       throw new BadRequestException('At least one image is required.');
     }
+    if (uniqueFileIds.length > 10) {
+      throw new BadRequestException('At most 10 images are allowed per solve request.');
+    }
 
-    // ── 1. Verify all files belong to the user and are images ────────────────
+    // Verify files belong to user and are images before creating the job.
     const files = await this.prisma.uploadedFile.findMany({
       where: { id: { in: uniqueFileIds }, userId },
-      select: { id: true, r2Key: true, mimeType: true, originalName: true },
+      select: { id: true, mimeType: true, originalName: true },
     });
 
     if (files.length !== uniqueFileIds.length) {
@@ -110,7 +117,7 @@ export class SolveService {
       }
     }
 
-    // ── 2. Credit check ───────────────────────────────────────────────────────
+    // Credit pre-check (non-binding — actual charge happens on completion).
     const creditSummary = await this.billing.getCreditSummary(userId);
     if (creditSummary.remainingCredits < SOLVE_CREDIT_COST) {
       return {
@@ -121,12 +128,232 @@ export class SolveService {
       };
     }
 
-    // ── 3. Download images from R2 ────────────────────────────────────────────
+    const job = await this.prisma.solveJob.create({
+      data: {
+        userId,
+        note: input.note ?? null,
+        status: SolveJobStatus.queued,
+        // Connect source files at creation time so they're immediately accessible.
+        sourceFiles: { connect: uniqueFileIds.map((id) => ({ id })) },
+      },
+    });
+
+    await this.queue.enqueueSolveJob(job.id);
+
+    return {
+      status: 'queued' as const,
+      jobId: job.id,
+    };
+  }
+
+  // ─── Process (called by worker) ────────────────────────────────────────────
+
+  async processSolveJob(jobId: string) {
+    // Atomic queued → processing guard to prevent double-processing.
+    const transition = await this.prisma.solveJob.updateMany({
+      where: { id: jobId, status: SolveJobStatus.queued },
+      data: {
+        status: SolveJobStatus.processing,
+        startedAt: new Date(),
+        attempts: { increment: 1 },
+        errorMessage: null,
+        completedAt: null,
+      },
+    });
+
+    if (transition.count === 0) {
+      return; // Already picked up or cancelled — skip silently.
+    }
+
+    const job = await this.prisma.solveJob.findUnique({
+      where: { id: jobId },
+      include: { sourceFiles: { select: { id: true } } },
+    });
+    if (!job) throw new NotFoundException('Solve job not found');
+
+    const fileIds = job.sourceFiles.map((f) => f.id);
+
+    try {
+      const solution = await this.runSolve(job.userId, { fileIds, note: job.note ?? undefined });
+
+      await this.billing.consumeCredits(job.userId, SOLVE_CREDIT_COST, 'Solve');
+
+      // Create the GeneratedSolution record and link source files.
+      const generatedSolution = await this.prisma.generatedSolution.create({
+        data: {
+          userId: job.userId,
+          content: solution,
+          sourceFiles: { connect: fileIds.map((id) => ({ id })) },
+        },
+      });
+
+      // Generate a short title in the background — failures must NOT block the job.
+      this.generateSolutionTitle(generatedSolution.id, solution).catch((err) => {
+        this.logger.warn(`Title generation failed for solution ${generatedSolution.id}: ${err?.message}`);
+      });
+
+      await this.prisma.solveJob.update({
+        where: { id: job.id },
+        data: {
+          status: SolveJobStatus.completed,
+          resultSolutionId: generatedSolution.id,
+          completedAt: new Date(),
+          errorMessage: null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Solve job ${job.id} failed: ${message}`);
+
+      await this.prisma.solveJob
+        .update({
+          where: { id: job.id },
+          data: {
+            status: SolveJobStatus.failed,
+            errorMessage: message,
+            completedAt: new Date(),
+          },
+        })
+        .catch(() => {});
+
+      throw error;
+    }
+  }
+
+  // ─── Poll / list ───────────────────────────────────────────────────────────
+
+  async listSolveJobs(userId: string) {
+    const jobs = await this.prisma.solveJob.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        status: true,
+        note: true,
+        errorMessage: true,
+        attempts: true,
+        startedAt: true,
+        completedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        resultSolutionId: true,
+        sourceFiles: {
+          select: { id: true, originalName: true, mimeType: true, size: true },
+        },
+      },
+    });
+    return { jobs };
+  }
+
+  async getSolveJob(userId: string, jobId: string) {
+    const job = await this.prisma.solveJob.findFirst({
+      where: { id: jobId, userId },
+      include: {
+        sourceFiles: {
+          select: { id: true, originalName: true, mimeType: true, size: true },
+        },
+        resultSolution: {
+          select: {
+            id: true,
+          },
+        },
+      },
+    });
+    if (!job) throw new NotFoundException('Solve job not found');
+    return job;
+  }
+
+  // ─── Solution history endpoints ────────────────────────────────────────────
+
+  /**
+   * Lightweight list for the history screen.
+   * Returns title + the FIRST source image only — no solution content.
+   */
+  async listSolutions(userId: string) {
+    const solutions = await this.prisma.generatedSolution.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        updatedAt: true,
+        // Only the first image — client renders a thumbnail
+        sourceFiles: {
+          select: { id: true, originalName: true, mimeType: true, size: true, r2Key: true },
+          take: 1,
+        },
+      },
+    });
+    return { solutions };
+  }
+
+  /**
+   * Full detail view — includes solution content and all source images.
+   */
+  async getSolution(userId: string, solutionId: string) {
+    const solution = await this.prisma.generatedSolution.findFirst({
+      where: { id: solutionId, userId },
+      select: {
+        id: true,
+        title: true,
+        content: true,
+        createdAt: true,
+        updatedAt: true,
+        sourceFiles: {
+          select: { id: true, originalName: true, mimeType: true, size: true, r2Key: true },
+        },
+        solveJob: {
+          select: { id: true, note: true, status: true, createdAt: true },
+        },
+      },
+    });
+    if (!solution) throw new NotFoundException('Solution not found');
+    return solution;
+  }
+
+  // ─── Core Gemini logic (private) ───────────────────────────────────────────
+
+  /**
+   * Fire-and-forget: ask Gemini for a short title derived from the solution
+   * content, then persist it. Called after the solution row is created.
+   */
+  private async generateSolutionTitle(solutionId: string, content: string): Promise<void> {
+    // Feed only the first ~1 000 chars to keep the title call cheap.
+    const excerpt = content.slice(0, 1000);
+
+    const response = await this.gemini.generateContent({
+      contents: [{ role: 'user', parts: [{ text: `Solution excerpt:\n\n${excerpt}` }] }],
+      config: { systemInstruction: TITLE_SYSTEM_INSTRUCTION },
+    });
+
+    const raw = String(response.text || '').trim();
+    if (!raw) return;
+
+    // Hard-cap at 80 chars in case the model disobeys.
+    const title = raw.replace(/^["']|["']$/g, '').slice(0, 80);
+
+    await this.prisma.generatedSolution.update({
+      where: { id: solutionId },
+      data: { title },
+    });
+  }
+
+  private async runSolve(
+    userId: string,
+    input: { fileIds: string[]; note?: string },
+  ): Promise<string> {
+    const files = await this.prisma.uploadedFile.findMany({
+      where: { id: { in: input.fileIds }, userId },
+      select: { id: true, r2Key: true, mimeType: true, originalName: true },
+    });
+
     const buffers = await Promise.all(
       files.map((f) => this.filesService.getObjectBuffer(f.r2Key)),
     );
 
-    // ── 4. Write to tmp, upload to Gemini File API ────────────────────────────
     const tempPaths: string[] = [];
     const geminiFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
 
@@ -145,16 +372,10 @@ export class SolveService {
             config: { mimeType: file.mimeType, displayName: file.originalName },
           });
 
-          geminiFiles.push({
-            name: uploaded.name,
-            uri: uploaded.uri,
-            mimeType: file.mimeType,
-          });
+          geminiFiles.push({ name: uploaded.name, uri: uploaded.uri, mimeType: file.mimeType });
         }),
       );
 
-      // ── 5. Build the Gemini request ─────────────────────────────────────────
-      // Images first, then the optional user note.
       const parts: Array<Record<string, unknown>> = geminiFiles.map((gf) => ({
         fileData: { mimeType: gf.mimeType, fileUri: gf.uri },
       }));
@@ -169,23 +390,14 @@ export class SolveService {
         contents: [{ role: 'user', parts }],
         config: { systemInstruction: SOLVE_SYSTEM_INSTRUCTION },
       });
-
+      console.log(response);
       const solution = String(response.text || '').trim();
       if (!solution) {
         throw new InternalServerErrorException('Gemini returned an empty solution.');
       }
 
-      // ── 6. Charge only on success ───────────────────────────────────────────
-      await this.billing.consumeCredits(userId, SOLVE_CREDIT_COST, 'Solve');
-
-      return {
-        status: 'ok' as const,
-        solution,
-        creditsCharged: SOLVE_CREDIT_COST,
-        imageCount: files.length,
-      };
+      return solution;
     } finally {
-      // Clean up local temp files synchronously.
       for (const tempPath of tempPaths) {
         if (fs.existsSync(tempPath)) {
           try {
@@ -197,7 +409,6 @@ export class SolveService {
           }
         }
       }
-      // Delete Gemini-side files in the background (they auto-expire at 48h).
       void Promise.allSettled(
         geminiFiles.map((gf) => this.gemini.deleteFile({ name: gf.name }).catch(() => undefined)),
       );

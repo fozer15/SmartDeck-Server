@@ -1,29 +1,51 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 
 import { AuthGuard } from '../auth/auth.guard';
 import { SolveDto } from './dto/solve.dto';
 import { SolveService } from './solve.service';
 
 /**
- * POST /solve
+ * POST  /solve/jobs               — enqueue a solve job → { status, jobId }
+ * GET   /solve/jobs               — list caller's jobs (last 50, no result body)
+ * GET   /solve/jobs/:jobId        — poll a job; includes resultSolution when completed
  *
- * Accepts one or more image fileIds (already uploaded via /files),
- * sends them to Gemini with a structured academic-solver system prompt,
- * and returns a Markdown + LaTeX solution.
- *
- * Cost: 15 credits per request (same as QUIZ_GENERATION), regardless of
- * the number of images.
+ * GET   /solve/solutions          — history list: title + first image per solution
+ * GET   /solve/solutions/:id      — full detail: content + all images + job meta
  */
 @Controller('solve')
 @UseGuards(AuthGuard)
 export class SolveController {
   constructor(private readonly solveService: SolveService) {}
 
-  @Post()
-  solve(@Req() req: any, @Body() dto: SolveDto) {
-    return this.solveService.solve(req.user.uid, {
+  // ── Jobs ──────────────────────────────────────────────────────────────────
+
+  @Post('jobs')
+  enqueue(@Req() req: any, @Body() dto: SolveDto) {
+    return this.solveService.enqueueSolveJob(req.user.uid, {
       fileIds: dto.fileIds,
       note: dto.note,
     });
+  }
+
+  @Get('jobs')
+  listJobs(@Req() req: any) {
+    return this.solveService.listSolveJobs(req.user.uid);
+  }
+
+  @Get('jobs/:jobId')
+  getJob(@Param('jobId') jobId: string, @Req() req: any) {
+    return this.solveService.getSolveJob(req.user.uid, jobId);
+  }
+
+  // ── Solutions (history) ───────────────────────────────────────────────────
+
+  @Get('solutions')
+  listSolutions(@Req() req: any) {
+    return this.solveService.listSolutions(req.user.uid);
+  }
+
+  @Get('solutions/:solutionId')
+  getSolution(@Param('solutionId') solutionId: string, @Req() req: any) {
+    return this.solveService.getSolution(req.user.uid, solutionId);
   }
 }
