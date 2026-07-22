@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards , Delete} from '@nestjs/common';
 
 import { AuthGuard } from '../auth/auth.guard';
 import { SolveDto } from './dto/solve.dto';
@@ -47,5 +47,10 @@ export class SolveController {
   @Get('solutions/:solutionId')
   getSolution(@Param('solutionId') solutionId: string, @Req() req: any) {
     return this.solveService.getSolution(req.user.uid, solutionId);
+  }
+
+  @Delete('solutions/:solutionId')
+  deleteSolution(@Param('solutionId') solutionId: string, @Req() req: any) {
+    return this.solveService.deleteSolution(req.user.uid, solutionId);
   }
 }

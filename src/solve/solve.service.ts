@@ -5,9 +5,6 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { SolveJobStatus } from '@prisma/client';
 
 import { BillingService } from '../billing/billing.service';
@@ -21,48 +18,37 @@ import { SolveJobQueueService } from './solve-job.queue.service';
 const SOLVE_CREDIT_COST = calculateCreditsForUnits(CreditCostType.SOLVE, 1);
 
 // ─── Gemini system instruction ────────────────────────────────────────────────
-const SOLVE_SYSTEM_INSTRUCTION = `You are an expert academic tutor and problem solver. The student has shared one or more images that may contain handwritten notes, textbook questions, printed problems, diagrams, formulas, graphs, or partial work. Your job is to analyze the image(s) and produce a clear, complete solution.
+// ─── Gemini system instruction ────────────────────────────────────────────────
+const SOLVE_SYSTEM_INSTRUCTION = `You are an expert academic tutor. Analyze the provided image(s) and student notes to produce a concise, complete solution strictly in valid JSON format.
 
-## Grounding rules
-- Base your answer ONLY on what is visible in the provided image(s) and any extra note the student added.
-- If the problem is partially cut off or unreadable, state what you can see and ask the student to re-upload a clearer image rather than guessing.
-- Do NOT invent numbers, variables, or sub-questions that are not in the images.
-- If multiple images are provided, treat them as parts of the same problem unless the student says otherwise.
+## Output JSON Schema
+Your response MUST be a single JSON object containing EXACTLY two fields:
+1. "answer": The final concise result or boxed answer (use display LaTeX for math).
+2. The second field depends on the subject:
+   - For STEM (Math, Physics, Chemistry, CS, Stats): Use key "steps" with a concise, numbered step-by-step solution.
+   - For Biology, Life Sciences, or General/Humanities: Use key "explanation" with a structured conceptual breakdown.
 
-## Output format
-- Always respond in **GitHub-Flavored Markdown**.
-- Write ALL mathematical expressions, equations, formulas, and numerical results using **LaTeX**:
-  - Inline: \\( expression \\)
-  - Display (block): \\[ expression \\]
-- Use display-block LaTeX for any multi-step equation or final answer.
-- Never write raw ASCII math like "x^2 + 3x" — always use LaTeX.
-- Do NOT wrap your entire response in a fenced code block.
+Example JSON for STEM (Notice the double-escaped backslashes):
+{
+  "answer": "\\\\[ x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a} \\\\]",
+  "steps": "1. **Identify coefficients:** \\\\( a = 1, b = -3, c = 2 \\\\)\\n2. **Apply quadratic formula:** ..."
+}
 
-## Subject-specific guidance
+Example JSON for Biology/General:
+{
+  "answer": "Photosynthesis occurs in the chloroplasts, converting light energy into chemical energy.",
+  "explanation": "### Process Breakdown\\n* **Light-Dependent Reactions:** Occur in thylakoid membranes..."
+}
 
-### STEM (mathematics, physics, chemistry, statistics, computer science)
-1. **Identify the problem type** in one sentence.
-2. **State the approach / theorem / formula** you will use, with a brief justification.
-3. **Work through each step** in numbered order: show formula, substitution, simplification, and explain *why* each step is valid.
-4. **Box or clearly label the final answer** using a display LaTeX block and a bold "**Answer:**" prefix.
-5. If there are multiple parts (a, b, c …), handle each under its own heading.
-6. After the solution, add a short **"Key concept"** note (1–2 sentences).
-
-### Biology & life sciences
-1. **Identify the topic**.
-2. Give a **conceptual explanation**: define terms, describe processes, explain cause-and-effect.
-3. Use **headings, bullet points, and short comparisons**.
-4. Only use LaTeX if an actual equation is required.
-5. End with a **"Key takeaway"** — one sentence the student should memorize.
-
-### General / mixed / unknown subject
-- Identify the subject first, then follow the STEM or biology guidance above.
-- For essay or comprehension questions, provide a model answer with clear structure and reasoning.
-
-## Tone
-- Be direct and educational — you are explaining, not chatting.
-- Never say "Great question!" or pad the answer with filler.
-- If the student's existing work contains an error, point it out kindly and explain why it is wrong before showing the correct approach.`;
+## Formatting & LaTeX Rules
+- Content inside "steps" or "explanation" MUST use GitHub-Flavored Markdown.
+- CRITICAL: Because you are generating JSON, you MUST double-escape ALL LaTeX backslashes and newlines. 
+  - Inline math: \\\\( expression \\\\)
+  - Display math: \\\\[ expression \\\\]
+  - Fractions/symbols: \\\\frac, \\\\sqrt, \\\\pm, \\\\rightarrow
+- Never write raw ASCII math like "x^2 + 3x".
+- Do NOT include conversational filler, greetings, or extra fields.
+- Base your solution ONLY on visible image content. If unreadable, state what is missing.`;
 
 // ─── Title-generation prompt ──────────────────────────────────────────────────
 const TITLE_SYSTEM_INSTRUCTION = `You generate ultra-short titles for academic problem solutions.
@@ -354,64 +340,57 @@ export class SolveService {
       files.map((f) => this.filesService.getObjectBuffer(f.r2Key)),
     );
 
-    const tempPaths: string[] = [];
-    const geminiFiles: Array<{ name: string; uri: string; mimeType: string }> = [];
+    // Pass image buffers directly as inline Base64 data (eliminates disk I/O & File API overhead)
+    const parts: Array<Record<string, unknown>> = files.map((file, i) => ({
+      inlineData: {
+        mimeType: file.mimeType,
+        data: buffers[i].buffer.toString('base64'),
+      },
+    }));
+
+    const userText = input.note?.trim()
+      ? `Please solve the problem(s) in the image(s). Additional note from the student: ${input.note.trim()}`
+      : 'Please solve the problem(s) shown in the image(s).';
+
+    parts.push({ text: userText });
+
+    const response = await this.gemini.generateContent({
+      contents: [{ role: 'user', parts }],
+      config: {
+        systemInstruction: SOLVE_SYSTEM_INSTRUCTION,
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const rawText = String(response.text || '').trim();
+    if (!rawText) {
+      throw new InternalServerErrorException('Gemini returned an empty solution.');
+    }
 
     try {
-      await Promise.all(
-        files.map(async (file, i) => {
-          const tempPath = path.join(
-            os.tmpdir(),
-            `${Date.now()}-solve-${file.id}-${file.originalName}`,
-          );
-          fs.writeFileSync(tempPath, buffers[i].buffer);
-          tempPaths.push(tempPath);
-
-          const uploaded = await this.gemini.uploadFile({
-            file: tempPath,
-            config: { mimeType: file.mimeType, displayName: file.originalName },
-          });
-
-          geminiFiles.push({ name: uploaded.name, uri: uploaded.uri, mimeType: file.mimeType });
-        }),
-      );
-
-      const parts: Array<Record<string, unknown>> = geminiFiles.map((gf) => ({
-        fileData: { mimeType: gf.mimeType, fileUri: gf.uri },
-      }));
-
-      const userText = input.note?.trim()
-        ? `Please solve the problem(s) in the image(s). Additional note from the student: ${input.note.trim()}`
-        : 'Please solve the problem(s) shown in the image(s).';
-
-      parts.push({ text: userText });
-
-      const response = await this.gemini.generateContent({
-        contents: [{ role: 'user', parts }],
-        config: { systemInstruction: SOLVE_SYSTEM_INSTRUCTION },
-      });
-      console.log(response);
-      const solution = String(response.text || '').trim();
-      if (!solution) {
-        throw new InternalServerErrorException('Gemini returned an empty solution.');
-      }
-
-      return solution;
-    } finally {
-      for (const tempPath of tempPaths) {
-        if (fs.existsSync(tempPath)) {
-          try {
-            fs.unlinkSync(tempPath);
-          } catch (err) {
-            this.logger.warn(
-              `Failed to remove temp file ${tempPath}: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-        }
-      }
-      void Promise.allSettled(
-        geminiFiles.map((gf) => this.gemini.deleteFile({ name: gf.name }).catch(() => undefined)),
-      );
+      const parsedSolution = JSON.parse(rawText);
+      return JSON.stringify(parsedSolution);
+    } catch (err) {
+      this.logger.error(`Failed to parse Gemini JSON output: ${rawText}`);
+      throw new InternalServerErrorException('Invalid solution format returned from solver.');
     }
+  }
+
+  async deleteSolution(userId: string, solutionId: string) {
+    // 1. Verify ownership and existence
+    const solution = await this.prisma.generatedSolution.findFirst({
+      where: { id: solutionId, userId },
+    });
+
+    if (!solution) {
+      throw new NotFoundException('Solution not found');
+    }
+
+    // 2. Delete the solution
+    await this.prisma.generatedSolution.delete({
+      where: { id: solutionId },
+    });
+
+    return { success: true };
   }
 }
