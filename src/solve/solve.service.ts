@@ -16,7 +16,7 @@ import { SolveJobQueueService } from './solve-job.queue.service';
 
 // ─── Credit cost ─────────────────────────────────────────────────────────────
 const SOLVE_CREDIT_COST = calculateCreditsForUnits(CreditCostType.SOLVE, 1);
-
+const TUTOR_CHAT_COST = calculateCreditsForUnits(CreditCostType.TUTOR_CHAT_MESSAGE,1)
 // ─── Gemini system instruction ────────────────────────────────────────────────
 // ─── Gemini system instruction ────────────────────────────────────────────────
 const SOLVE_SYSTEM_INSTRUCTION = `You are an expert academic tutor. Analyze the provided image(s) and student notes to produce a concise, complete solution strictly in valid JSON format.
@@ -57,6 +57,22 @@ Rules:
 - Capture the subject and core concept (e.g. "Quadratic Formula – Projectile Motion", "Cellular Respiration: ATP Synthesis", "Integration by Parts – Trigonometric Integral").
 - No LaTeX, no markdown, no punctuation other than a dash or colon to separate subject from concept.
 - Output ONLY the title string — no explanation, no quotes.`;
+
+
+const TUTOR_CHAT_SYSTEM_INSTRUCTION = `You are a helpful, expert AI academic tutor.
+The user is asking a follow-up question about a specific problem they recently solved.
+You will be provided with the original solution generated for the student as context.
+Use this context to answer their question, simplify the explanation, provide examples, or break down the steps further.
+
+## Formatting Rules
+- Format your response in clean GitHub-Flavored Markdown.
+- Double-escape ALL LaTeX backslashes and newlines just like the main solver.
+  - Inline math: \\\\( expression \\\\)
+  - Display math: \\\\[ expression \\\\]
+- Be warm, encouraging, and highly educational.`;
+
+// Assuming a chat costs 1 credit, adjust this based on your CreditCostType enum if needed
+const CHAT_CREDIT_COST = 1;
 
 @Injectable()
 export class SolveService {
@@ -392,5 +408,73 @@ export class SolveService {
     });
 
     return { success: true };
+  }
+
+  // ─── Tutor Chat ────────────────────────────────────────────────────────────
+  
+  async chatAboutSolution(userId: string, solutionId: string, input: { message: string; history?: Array<{role: string, text: string}> }) {
+    // 1. Verify solution exists and belongs to the user
+    const solution = await this.prisma.generatedSolution.findFirst({
+      where: { id: solutionId, userId },
+      select: { id: true, content: true }
+    });
+    console.log("insiddeede")
+    if (!solution) {
+      throw new NotFoundException('Solution not found or access denied');
+    }
+
+    // 2. Pre-check credits (Optional: depending on if you want to charge for chats)
+    const creditSummary = await this.billing.getCreditSummary(userId);
+    if (creditSummary.remainingCredits < TUTOR_CHAT_COST) {
+       console.log("no credit")
+      return {
+        status: 'credits_needed' as const,
+        requiredCredits: TUTOR_CHAT_COST,
+        remainingCredits: creditSummary.remainingCredits,
+        monthlyCredits: creditSummary.monthlyCredits,
+      };
+    }
+
+    // 3. Build the context and conversation history
+    const parts = [];
+    
+    // Inject the original solution context secretly so Gemini knows what we are talking about
+    const contextPrompt = `Context: The student is asking about the following solution they received:\n\n${solution.content}\n\n`;
+    
+    // If the client sends chat history, append it
+    if (input.history && input.history.length > 0) {
+      // (Optional) You can map history into Gemini's multi-turn format here 
+      // For simplicity in a single call, we can stringify the history:
+      const historyString = input.history.map(msg => `${msg.role === 'user' ? 'Student' : 'Tutor'}: ${msg.text}`).join('\n\n');
+      parts.push({ text: `${contextPrompt}Conversation History:\n${historyString}\n\nStudent's new message: ${input.message}` });
+    } else {
+      parts.push({ text: `${contextPrompt}Student's question: ${input.message}` });
+    }
+
+    // 4. Ask Gemini
+    try {
+      const response = await this.gemini.generateContent({
+        contents: [{ role: 'user', parts }],
+        config: { 
+          systemInstruction: TUTOR_CHAT_SYSTEM_INSTRUCTION,
+          // Not restricting to JSON here, regular markdown string is preferred for chat
+        },
+      });
+
+      const rawText = String(response.text || '').trim();
+      
+      if (!rawText) {
+        throw new InternalServerErrorException('AI returned an empty response.');
+      }
+
+      // 5. Consume Credits
+      await this.billing.consumeCredits(userId, TUTOR_CHAT_COST, 'Tutor Chat');
+      console.log("hererere")
+      return { reply: rawText };
+      
+    } catch (error) {
+      this.logger.error(`Tutor Chat failed for solution ${solutionId}:`, error);
+      throw new InternalServerErrorException('Failed to communicate with AI Tutor.');
+    }
   }
 }

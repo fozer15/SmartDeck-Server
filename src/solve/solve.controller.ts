@@ -3,7 +3,7 @@ import { Body, Controller, Get, Param, Post, Req, UseGuards , Delete} from '@nes
 import { AuthGuard } from '../auth/auth.guard';
 import { SolveDto } from './dto/solve.dto';
 import { SolveService } from './solve.service';
-
+import {SolutionChatDto} from "./dto/solution-chat.dto"
 /**
  * POST  /solve/jobs               — enqueue a solve job → { status, jobId }
  * GET   /solve/jobs               — list caller's jobs (last 50, no result body)
@@ -52,5 +52,14 @@ export class SolveController {
   @Delete('solutions/:solutionId')
   deleteSolution(@Param('solutionId') solutionId: string, @Req() req: any) {
     return this.solveService.deleteSolution(req.user.uid, solutionId);
+  }
+
+  @Post('solutions/:solutionId/chat')
+  chatAboutSolution(
+    @Param('solutionId') solutionId: string,
+    @Body() dto: SolutionChatDto,
+    @Req() req: any
+  ) {
+    return this.solveService.chatAboutSolution(req.user.uid, solutionId, dto);
   }
 }
