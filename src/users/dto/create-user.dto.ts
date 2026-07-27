@@ -26,6 +26,10 @@ export class CreateUserDto {
   avatarUrl?: string;
 
   @IsOptional()
+  @IsString()
+  deviceId?: string;
+
+  @IsOptional()
   @IsEnum(AppLanguage)
   preferredLanguage?: AppLanguage;
 }
