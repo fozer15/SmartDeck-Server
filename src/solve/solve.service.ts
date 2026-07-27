@@ -22,16 +22,21 @@ const TUTOR_CHAT_COST = calculateCreditsForUnits(CreditCostType.TUTOR_CHAT_MESSA
 const SOLVE_SYSTEM_INSTRUCTION = `You are an expert academic tutor. Analyze the provided image(s) and student notes to produce a concise, complete solution strictly in valid JSON format.
 
 ## Output JSON Schema
-Your response MUST be a single JSON object containing EXACTLY two fields:
+Your response MUST be a single JSON object containing the following fields:
 1. "answer": The final concise result or boxed answer (use display LaTeX for math).
-2. The second field depends on the subject:
+2. "steps" OR "explanation":
    - For STEM (Math, Physics, Chemistry, CS, Stats): Use key "steps" with a concise, numbered step-by-step solution.
    - For Biology, Life Sciences, or General/Humanities: Use key "explanation" with a structured conceptual breakdown.
+3. "diagram_svg" (OPTIONAL): If the problem involves geometry, graphs, circuits, or physical setups, provide a clean, valid, raw SVG string to illustrate it. 
+   - Use a flexible viewBox (e.g., viewBox='0 0 200 200').
+   - CRITICAL: Use single quotes for all SVG attributes to avoid breaking the JSON (e.g., <rect x='10' y='10' width='50' height='50' stroke='black' fill='none' />).
+   - Omit this field entirely if no diagram is necessary.
 
-Example JSON for STEM (Notice the double-escaped backslashes):
+Example JSON for STEM with Diagram (Notice the double-escaped backslashes for ALL LaTeX macros and single quotes in SVG):
 {
-  "answer": "\\\\[ x = \\\\frac{-b \\\\pm \\\\sqrt{b^2 - 4ac}}{2a} \\\\]",
-  "steps": "1. **Identify coefficients:** \\\\( a = 1, b = -3, c = 2 \\\\)\\n2. **Apply quadratic formula:** ..."
+  "answer": "\\\\[ c \\\\approx 5.83 \\\\]",
+  "steps": "1. **Use Law of Cosines:** \\\\( c^2 = a^2 + b^2 - 2ab \\\\cos(C) \\\\)\\n2. **Substitute values:** \\\\[ c = \\\\sqrt{3^2 + 4^2 - 2(3)(4)\\\\cos(90^\\\\circ)} \\\\]...",
+  "diagram_svg": "<svg viewBox='0 0 100 100'><polygon points='10,90 90,90 10,10' fill='none' stroke='black'/><text x='45' y='98' font-size='10'>4</text><text x='2' y='50' font-size='10'>3</text></svg>"
 }
 
 Example JSON for Biology/General:
@@ -45,7 +50,7 @@ Example JSON for Biology/General:
 - CRITICAL: Because you are generating JSON, you MUST double-escape ALL LaTeX backslashes and newlines. 
   - Inline math: \\\\( expression \\\\)
   - Display math: \\\\[ expression \\\\]
-  - Fractions/symbols: \\\\frac, \\\\sqrt, \\\\pm, \\\\rightarrow
+  - Fractions/symbols: \\\\frac, \\\\sqrt, \\\\pm, \\\\rightarrow, \\\\cos, \\\\circ, \\\\implies
 - Never write raw ASCII math like "x^2 + 3x".
 - Do NOT include conversational filler, greetings, or extra fields.
 - Base your solution ONLY on visible image content. If unreadable, state what is missing.`;
@@ -356,11 +361,11 @@ export class SolveService {
       files.map((f) => this.filesService.getObjectBuffer(f.r2Key)),
     );
 
-    // Pass image buffers directly as inline Base64 data (eliminates disk I/O & File API overhead)
+    // FIX 1: Correctly parse the buffer so Gemini actually receives the image!
     const parts: Array<Record<string, unknown>> = files.map((file, i) => ({
       inlineData: {
         mimeType: file.mimeType,
-        data: buffers[i].buffer.toString('base64'),
+        data: buffers[i].buffer.toString('base64'), 
       },
     }));
 
@@ -370,10 +375,11 @@ export class SolveService {
 
     parts.push({ text: userText });
 
+    // FIX 2: Strict system instruction so Gemini escapes LaTeX properly itself
     const response = await this.gemini.generateContent({
       contents: [{ role: 'user', parts }],
       config: {
-        systemInstruction: SOLVE_SYSTEM_INSTRUCTION,
+        systemInstruction: `${SOLVE_SYSTEM_INSTRUCTION}\nIMPORTANT: You are generating raw JSON. Every backslash in LaTeX commands MUST be double-escaped (e.g. \\\\sqrt instead of \\sqrt).`,
         responseMimeType: 'application/json',
       },
     });
@@ -384,10 +390,12 @@ export class SolveService {
     }
 
     try {
+      // FIX 3: Parse directly without regex! Gemini is now outputting valid JSON.
       const parsedSolution = JSON.parse(rawText);
       return JSON.stringify(parsedSolution);
     } catch (err) {
-      this.logger.error(`Failed to parse Gemini JSON output: ${rawText}`);
+      this.logger.error(`Failed to parse Gemini JSON output: ${err.message}`);
+      this.logger.debug(`Raw payload was: ${rawText}`);
       throw new InternalServerErrorException('Invalid solution format returned from solver.');
     }
   }
@@ -412,21 +420,57 @@ export class SolveService {
 
   // ─── Tutor Chat ────────────────────────────────────────────────────────────
   
+  async getSolutionMessages(userId: string, solutionId: string, limit: number, cursor?: string) {
+  // 1. Verify the solution belongs to the user
+    const solutionExists = await this.prisma.generatedSolution.findFirst({
+      where: { id: solutionId, userId },
+      select: { id: true }
+    });
+
+    if (!solutionExists) {
+      throw new NotFoundException('Solution not found or access denied');
+    }
+
+    // 2. Build the pagination query
+    const query: any = {
+      where: { solutionId, userId },
+      take: limit,
+      // Fetch newest messages first so we get the most recent page
+      orderBy: { createdAt: 'desc' }, 
+    };
+
+    if (cursor) {
+      query.cursor = { id: cursor };
+      query.skip = 1; // Skip the cursor itself
+    }
+
+    // 3. Fetch from DB
+    const messages = await this.prisma.solutionMessage.findMany(query);
+    
+    // 4. Determine if there is a next page (older messages)
+    const nextCursor = messages.length === limit ? messages[messages.length - 1].id : null;
+
+    return {
+      // Reverse the array so the client receives them in chronological order (oldest to newest)
+      messages: messages.reverse(),
+      nextCursor,
+    };
+  }
+
   async chatAboutSolution(userId: string, solutionId: string, input: { message: string; history?: Array<{role: string, text: string}> }) {
     // 1. Verify solution exists and belongs to the user
     const solution = await this.prisma.generatedSolution.findFirst({
       where: { id: solutionId, userId },
       select: { id: true, content: true }
     });
-    console.log("insiddeede")
+    
     if (!solution) {
       throw new NotFoundException('Solution not found or access denied');
     }
 
-    // 2. Pre-check credits (Optional: depending on if you want to charge for chats)
+    // 2. Pre-check credits
     const creditSummary = await this.billing.getCreditSummary(userId);
     if (creditSummary.remainingCredits < TUTOR_CHAT_COST) {
-       console.log("no credit")
       return {
         status: 'credits_needed' as const,
         requiredCredits: TUTOR_CHAT_COST,
@@ -435,7 +479,17 @@ export class SolveService {
       };
     }
 
-    // 3. Build the context and conversation history
+    // 3. Record the user's message in the database
+    await this.prisma.solutionMessage.create({
+      data: {
+        userId,
+        solutionId,
+        role: 'user',
+        text: input.message,
+      }
+    });
+
+    // 4. Build the context and conversation history
     const parts = [];
     
     // Inject the original solution context secretly so Gemini knows what we are talking about
@@ -443,21 +497,18 @@ export class SolveService {
     
     // If the client sends chat history, append it
     if (input.history && input.history.length > 0) {
-      // (Optional) You can map history into Gemini's multi-turn format here 
-      // For simplicity in a single call, we can stringify the history:
       const historyString = input.history.map(msg => `${msg.role === 'user' ? 'Student' : 'Tutor'}: ${msg.text}`).join('\n\n');
       parts.push({ text: `${contextPrompt}Conversation History:\n${historyString}\n\nStudent's new message: ${input.message}` });
     } else {
       parts.push({ text: `${contextPrompt}Student's question: ${input.message}` });
     }
 
-    // 4. Ask Gemini
+    // 5. Ask Gemini
     try {
       const response = await this.gemini.generateContent({
         contents: [{ role: 'user', parts }],
         config: { 
           systemInstruction: TUTOR_CHAT_SYSTEM_INSTRUCTION,
-          // Not restricting to JSON here, regular markdown string is preferred for chat
         },
       });
 
@@ -467,14 +518,24 @@ export class SolveService {
         throw new InternalServerErrorException('AI returned an empty response.');
       }
 
-      // 5. Consume Credits
+      // 6. Record the AI's response in the database
+      await this.prisma.solutionMessage.create({
+        data: {
+          userId,
+          solutionId,
+          role: 'assistant',
+          text: rawText,
+        }
+      });
+
+      // 7. Consume Credits
       await this.billing.consumeCredits(userId, TUTOR_CHAT_COST, 'Tutor Chat');
-      console.log("hererere")
+      
       return { reply: rawText };
       
     } catch (error) {
       this.logger.error(`Tutor Chat failed for solution ${solutionId}:`, error);
       throw new InternalServerErrorException('Failed to communicate with AI Tutor.');
     }
-  }
+}
 }

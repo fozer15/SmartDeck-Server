@@ -51,7 +51,7 @@ export const APP_LIMITS = {
     [CreditCostType.TEXT_CHARACTERS]: { credits: 1, unitSize: 2000, minimumCharge: 1 },
     // SOLVE costs the same as quiz generation — it calls Gemini with potentially
     // multiple images and produces a long-form structured response.
-    [CreditCostType.SOLVE]: { credits: 15, unitSize: 1, minimumCharge: 15 },
+    [CreditCostType.SOLVE]: { credits: 18, unitSize: 1, minimumCharge: 18 },
   } satisfies Record<CreditCostType, CreditFactor>,
 } as const;
 

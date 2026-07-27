@@ -31,6 +31,7 @@ model User {
   tutorConversations TutorConversation[] 
   following     UserFollow[]    @relation("UserFollowing")
   followers     UserFollow[]    @relation("UserFollowers")
+  solutionMessages   SolutionMessage[]
   usageLimit      UserUsageLimit?
   generationJobs QuizGenerationJob[]
   solveJobs      SolveJob[]
@@ -474,11 +475,31 @@ model GeneratedSolution {
 
   /// Back-reference to the job that produced this solution
   solveJob  SolveJob?
-
+  messages    SolutionMessage[]
   /// Source images (same set as SolveJob.sourceFiles — denormalized for direct access)
   sourceFiles UploadedFile[] @relation("GeneratedSolutionSourceFiles")
 
   @@index([userId, createdAt])
+}
+
+model SolutionMessage {
+  id         String            @id @default(cuid())
+  
+  userId     String
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  solutionId String
+  solution   GeneratedSolution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  
+  // Reusing your existing TutorRole enum (user, assistant, system)
+  role       TutorRole         @default(user)
+  text       String            @db.Text 
+  
+  createdAt  DateTime          @default(now())
+
+  // Fast historical lookups when loading the chat for a specific solution
+  @@index([solutionId, createdAt])
+  @@index([userId])
 }
 
 enum SolveJobStatus {

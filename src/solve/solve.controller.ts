@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards , Delete} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards , Delete,Query} from '@nestjs/common';
 
 import { AuthGuard } from '../auth/auth.guard';
 import { SolveDto } from './dto/solve.dto';
@@ -52,6 +52,17 @@ export class SolveController {
   @Delete('solutions/:solutionId')
   deleteSolution(@Param('solutionId') solutionId: string, @Req() req: any) {
     return this.solveService.deleteSolution(req.user.uid, solutionId);
+  }
+
+  @Get('solutions/:solutionId/messages')
+  getSolutionMessages(
+    @Param('solutionId') solutionId: string,
+    @Req() req: any,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string
+  ) {
+    const parsedLimit = limit ? parseInt(limit, 10) : 50;
+    return this.solveService.getSolutionMessages(req.user.uid, solutionId, parsedLimit, cursor);
   }
 
   @Post('solutions/:solutionId/chat')
