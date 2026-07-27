@@ -41,7 +41,7 @@ export class AuthService {
       
       // Extract user info from Firebase token
       const { uid, email, name, picture, firebase } = decodedToken;
-      const {school,degree,name:OnboardingName, lang} = dto;
+      const {school,degree,name:OnboardingName, lang, deviceId} = dto;
       const user = await this.usersService.findOrCreate({
         id: uid,
         email: email,
@@ -50,6 +50,7 @@ export class AuthService {
         preferredLanguage:lang as AppLanguage || "en",
         name: OnboardingName || name || undefined,
         avatarUrl: picture || undefined,
+        deviceId
       });
 
       return {

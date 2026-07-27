@@ -10,6 +10,10 @@ export class SignInDto {
 
   @IsOptional()
   @IsString()
+  deviceId?: string;
+
+  @IsOptional()
+  @IsString()
   school?: string;
 
   @IsOptional()

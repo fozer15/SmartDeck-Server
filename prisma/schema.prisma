@@ -502,6 +502,13 @@ model SolutionMessage {
   @@index([userId])
 }
 
+model RegisteredDevice {
+  deviceId  String   @id
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 enum SolveJobStatus {
   queued
   processing

@@ -6,6 +6,7 @@ import { BillingService } from '../billing/billing.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import {AppLanguage} from '@prisma/client';
 import admin from "firebase-admin";
+import {APP_LIMITS, PlanType} from "../config/plan-limits"
 
 @Injectable()
 export class UsersService {
@@ -21,7 +22,7 @@ export class UsersService {
   }
 
   async findOrCreate(dto: CreateUserDto) {
-    // Check if user already exists (using Firebase UID)
+    // 1. Check if user already exists (using Firebase UID)
     const existingUser = await this.prisma.user.findUnique({
       where: { id: dto.id },
     });
@@ -42,8 +43,17 @@ export class UsersService {
       return this.withUserCreditSummary(updatedUser);
     }
 
-    // Create new user with Firebase UID as ID
+    // 2. NEW USER FLOW: Check if the physical device has been used before
+    let isDeviceRegistered = false;
+    
+    if (dto.deviceId) {
+      const existingDevice = await this.prisma.registeredDevice.findUnique({
+        where: { deviceId:dto.deviceId },
+      });
+      isDeviceRegistered = !!existingDevice;
+    }
 
+    // 3. Create new user with Firebase UID as ID
     const createdUser = await this.prisma.user.create({
       data: {
         id: dto.id,
@@ -56,11 +66,26 @@ export class UsersService {
       } as any,
     });
 
+    // 4. Set Initial Credits based on Device History
+    // If device is known -> set creditsUsed to the max limit (0 free credits left)
+    // If device is new -> set creditsUsed to 0 (full free credits available)
+    const initialCreditsUsed = isDeviceRegistered 
+      ? APP_LIMITS.MONTHLY_CREDITS["FREE"] 
+      : 0;
+
     await this.prisma.userUsageLimit.create({
-      data:{
-        userId:dto.id,
+      data: {
+        userId: dto.id,
+        creditsUsed: initialCreditsUsed
       }
-    })
+    });
+
+    // 5. Register the device permanently if this is its first time creating an account
+    if (dto.deviceId && !isDeviceRegistered) {
+      await this.prisma.registeredDevice.create({
+        data: { deviceId:dto.deviceId }
+      });
+    }
     
     return this.withUserCreditSummary(createdUser);
   }
