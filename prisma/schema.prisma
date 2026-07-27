@@ -31,8 +31,11 @@ model User {
   tutorConversations TutorConversation[] 
   following     UserFollow[]    @relation("UserFollowing")
   followers     UserFollow[]    @relation("UserFollowers")
+  solutionMessages   SolutionMessage[]
   usageLimit      UserUsageLimit?
   generationJobs QuizGenerationJob[]
+  solveJobs      SolveJob[]
+  generatedSolutions GeneratedSolution[]
 }
 
 model UserUsageLimit {
@@ -63,6 +66,8 @@ model UploadedFile {
   createdAt    DateTime        @default(now())
   quizzes      GeneratedQuiz[] 
   tutorAttachments TutorMessageAttachment[]
+  solveJobSources  SolveJob[]         @relation("SolveJobSourceFiles")
+  solutionSources  GeneratedSolution[] @relation("GeneratedSolutionSourceFiles")
 }
 
 model GeneratedQuiz {
@@ -422,4 +427,85 @@ enum Subject {
   MUSIC_THEORY
   EXAM_PREP
   GENERAL_STUDIES
+}
+
+// ─── Solve jobs ───────────────────────────────────────────────────────────────
+
+model SolveJob {
+  id                 String             @id @default(cuid())
+  userId             String
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status             SolveJobStatus     @default(queued)
+  /// Optional student note passed alongside the images
+  note               String?            @db.Text
+  errorMessage       String?
+  attempts           Int                @default(0)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  /// Source images the user submitted (populated at enqueue time)
+  sourceFiles        UploadedFile[]     @relation("SolveJobSourceFiles")
+  /// The produced solution record (null until job completes)
+  resultSolutionId   String?            @unique
+  resultSolution     GeneratedSolution? @relation(fields: [resultSolutionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
+/// The persisted output of a completed solve job.
+/// Kept separate from SolveJob so the result can outlive job metadata
+/// and be browsed independently (mirrors GeneratedQuiz / QuizGenerationJob separation).
+model GeneratedSolution {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Short AI-generated title (e.g. "Quadratic Formula – Projectile Motion")
+  title     String?
+
+  /// Markdown + LaTeX body returned by Gemini
+  content   String    @db.Text
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  /// Back-reference to the job that produced this solution
+  solveJob  SolveJob?
+  messages    SolutionMessage[]
+  /// Source images (same set as SolveJob.sourceFiles — denormalized for direct access)
+  sourceFiles UploadedFile[] @relation("GeneratedSolutionSourceFiles")
+
+  @@index([userId, createdAt])
+}
+
+model SolutionMessage {
+  id         String            @id @default(cuid())
+  
+  userId     String
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  solutionId String
+  solution   GeneratedSolution @relation(fields: [solutionId], references: [id], onDelete: Cascade)
+  
+  // Reusing your existing TutorRole enum (user, assistant, system)
+  role       TutorRole         @default(user)
+  text       String            @db.Text 
+  
+  createdAt  DateTime          @default(now())
+
+  // Fast historical lookups when loading the chat for a specific solution
+  @@index([solutionId, createdAt])
+  @@index([userId])
+}
+
+enum SolveJobStatus {
+  queued
+  processing
+  completed
+  failed
+  cancelled
 }

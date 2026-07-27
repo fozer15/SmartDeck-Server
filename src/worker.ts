@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { QuizGenerationWorkerService } from './quizzes/quiz-generation.worker.service';
+import { SolveJobWorkerService } from './solve/solve-job.worker.service';
 
 async function bootstrap() {
   const logger = new Logger('WorkerBootstrap');
@@ -10,8 +11,11 @@ async function bootstrap() {
     logger: ['log', 'error', 'warn'],
   });
 
-  const worker = app.get(QuizGenerationWorkerService);
-  await worker.start();
+  const quizWorker = app.get(QuizGenerationWorkerService);
+  await quizWorker.start();
+
+  const solveWorker = app.get(SolveJobWorkerService);
+  await solveWorker.start();
 
   const shutdown = async (signal: string) => {
     logger.log(`Received ${signal}, shutting down worker context.`);

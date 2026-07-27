@@ -23,6 +23,7 @@ export class EnvService {
   readonly revenueCatWebhookAuth: string;
   readonly redisUrl: string;
   readonly quizGenerationWorkerConcurrency: number;
+  readonly solveWorkerConcurrency: number;
   readonly stripeSecretKey: string;
   readonly stripeWebhookSecret: string;
   readonly stripeProMonthlyPriceId: string;
@@ -77,6 +78,11 @@ export class EnvService {
     this.quizGenerationWorkerConcurrency = Number.isFinite(configuredConcurrency) && configuredConcurrency > 0
       ? Math.floor(configuredConcurrency)
       : 2;
+
+    const configuredSolveConcurrency = Number(config.get<string>('SOLVE_WORKER_CONCURRENCY') || 5);
+    this.solveWorkerConcurrency = Number.isFinite(configuredSolveConcurrency) && configuredSolveConcurrency > 0
+      ? Math.floor(configuredSolveConcurrency)
+      : 5;
   }
 
   private getStripeConfigValue(
