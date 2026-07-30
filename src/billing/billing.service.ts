@@ -15,13 +15,16 @@ import { EnvService } from '../env/env.service';
 import {
   APP_LIMITS,
   PlanType,
+  UNLIMITED_CREDITS,
   getMonthlyCreditsForPlan,
   getRemainingCredits,
+  isUnlimitedPlan,
 } from '../config/plan-limits';
 import Stripe from 'stripe';
 
 type CreditSummary = {
   plan: PlanType;
+  isUnlimited: boolean;
   monthlyCredits: number;
   creditsUsed: number;
   remainingCredits: number;
@@ -277,7 +280,8 @@ export class BillingService {
 
     return {
       ...summary,
-      canAfford: credits <= 0 || summary.remainingCredits >= credits,
+      // Unlimited plans can always afford anything; otherwise check balance.
+      canAfford: summary.isUnlimited || credits <= 0 || summary.remainingCredits >= credits,
     };
   }
 
@@ -304,20 +308,19 @@ export class BillingService {
         throw new NotFoundException('User usage records not found.');
       }
 
-      const remainingCredits = getRemainingCredits(monthlyCredits, usage.creditsUsed);
-      if (remainingCredits < credits) {
-        throw new ForbiddenException(
-          `${reason} requires ${credits} credits, but only ${remainingCredits} credits remain this month.`,
-        );
+      // Unlimited plans: skip balance check but still record usage for abuse monitoring.
+      if (!isUnlimitedPlan(plan)) {
+        const remainingCredits = getRemainingCredits(monthlyCredits, usage.creditsUsed);
+        if (remainingCredits < credits) {
+          throw new ForbiddenException(
+            `${reason} requires ${credits} credits, but only ${remainingCredits} credits remain this month.`,
+          );
+        }
       }
 
       const updatedUsage = await tx.userUsageLimit.update({
         where: { userId },
-        data: {
-          creditsUsed: {
-            increment: credits,
-          },
-        },
+        data: { creditsUsed: { increment: credits } },
       });
 
       return this.buildCreditSummary(plan, updatedUsage.creditsUsed);
@@ -456,9 +459,11 @@ export class BillingService {
 
   private buildCreditSummary(plan: PlanType, creditsUsed: number): CreditSummary {
     const monthlyCredits = getMonthlyCreditsForPlan(plan);
+    const unlimited = isUnlimitedPlan(plan);
 
     return {
       plan,
+      isUnlimited: unlimited,
       monthlyCredits,
       creditsUsed,
       remainingCredits: getRemainingCredits(monthlyCredits, creditsUsed),

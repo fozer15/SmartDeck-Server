@@ -244,7 +244,7 @@ export class TutorChatService {
     const creditCost = this.calculateCreditCost(preparedAttachments);
     const creditSummary = await this.billing.getCreditSummary(userId);
 
-    if (creditSummary.remainingCredits < creditCost) {
+    if (!creditSummary.isUnlimited && creditSummary.remainingCredits < creditCost) {
       return {
         status: 'credits_needed' as const,
         requiredCredits: creditCost,

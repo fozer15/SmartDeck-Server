@@ -3,6 +3,12 @@ export enum PlanType {
   PRO = 'PRO',
 }
 
+/**
+ * Sentinel value stored in MONTHLY_CREDITS for unlimited plans.
+ * Any value of -1 means "no credit cap — usage is recorded for monitoring only".
+ */
+export const UNLIMITED_CREDITS = -1 as const;
+
 export enum CreditCostType {
   PDF_PAGE = 'PDF_PAGE',
   AUDIO_MINUTE = 'AUDIO_MINUTE',
@@ -33,7 +39,9 @@ export const APP_LIMITS = {
   },
   MONTHLY_CREDITS: {
     [PlanType.FREE]: 200,
-    [PlanType.PRO]: 2500,
+    // PRO is unlimited — use the UNLIMITED_CREDITS sentinel (-1).
+    // Usage is still recorded for abuse monitoring.
+    [PlanType.PRO]: -1,
   },
   QUIZ_GENERATION: {
     MIN_QUESTIONS_PER_DECK: 1,
@@ -69,6 +77,12 @@ export const getMonthlyCreditsForPlan = (
   return APP_LIMITS.MONTHLY_CREDITS[normalizePlanType(plan)];
 };
 
+export const isUnlimitedPlan = (
+  plan: PlanType | string | null | undefined,
+): boolean => {
+  return getMonthlyCreditsForPlan(plan) === UNLIMITED_CREDITS;
+};
+
 export const getMaxQuestionsPerDeckForPlan = (
   plan: PlanType | string | null | undefined,
 ): number => {
@@ -94,5 +108,7 @@ export const getRemainingCredits = (
   monthlyCredits: number,
   creditsUsed: number,
 ): number => {
+  // Unlimited plans: return sentinel so callers can detect it.
+  if (monthlyCredits === UNLIMITED_CREDITS) return UNLIMITED_CREDITS;
   return Math.max(monthlyCredits - creditsUsed, 0);
 };

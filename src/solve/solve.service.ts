@@ -126,7 +126,7 @@ export class SolveService {
 
     // Credit pre-check (non-binding — actual charge happens on completion).
     const creditSummary = await this.billing.getCreditSummary(userId);
-    if (creditSummary.remainingCredits < SOLVE_CREDIT_COST) {
+    if (!creditSummary.isUnlimited && creditSummary.remainingCredits < SOLVE_CREDIT_COST) {
       return {
         status: 'credits_needed' as const,
         requiredCredits: SOLVE_CREDIT_COST,
@@ -470,7 +470,7 @@ export class SolveService {
 
     // 2. Pre-check credits
     const creditSummary = await this.billing.getCreditSummary(userId);
-    if (creditSummary.remainingCredits < TUTOR_CHAT_COST) {
+    if (!creditSummary.isUnlimited && creditSummary.remainingCredits < TUTOR_CHAT_COST) {
       return {
         status: 'credits_needed' as const,
         requiredCredits: TUTOR_CHAT_COST,
