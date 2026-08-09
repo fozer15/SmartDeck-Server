@@ -391,7 +391,7 @@ export class TutorChatService {
       ];
 
       // 11. Call Gemini
-      const response = await this.gemini.generateContent({
+      const response = await this.gemini.generateContentWithQuizModel({
         contents,
         config: { systemInstruction },
       });

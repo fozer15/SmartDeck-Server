@@ -11,6 +11,7 @@ export class EnvService {
 
   readonly geminiApiKey: string;
   readonly geminiModel: string;
+  readonly geminiModelQuiz: string;
 
   readonly r2AccountId: string;
   readonly r2AccessKeyId: string;
@@ -39,7 +40,8 @@ export class EnvService {
     this.firebaseClientEmail = config.getOrThrow('FIREBASE_CLIENT_EMAIL');
     this.firebasePrivateKey = config.getOrThrow<string>('FIREBASE_PRIVATE_KEY').replace(/\\n/g, '\n');
     this.geminiApiKey = config.getOrThrow('GEMINI_API_KEY');
-    this.geminiModel = config.get<string>('GEMINI_MODEL');
+    this.geminiModel = config.get<string>('GEMINI_MODEL') || 'gemini-3.5-flash-lite';
+    this.geminiModelQuiz = config.get<string>('GEMINI_MODEL_QUIZ') || this.geminiModel;
     this.r2AccountId = config.getOrThrow('R2_ACCOUNT_ID');
     this.r2AccessKeyId = config.getOrThrow('R2_ACCESS_KEY_ID');
     this.r2SecretAccessKey = config.getOrThrow('R2_SECRET_ACCESS_KEY');
