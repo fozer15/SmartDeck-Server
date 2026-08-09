@@ -308,6 +308,17 @@ model StudySessionQuestionProgress {
   streak        Int           @default(0)
   lastReviewed  DateTime?
 
+  /// The raw answer the user submitted on their most recent attempt.
+  /// - multiple_choice: the selected option string
+  /// - short_answer:    the typed text
+  /// - flashcard:       "correct" | "incorrect" (client self-rating)
+  lastUserAnswer   String?
+  /// The correct answer for this question at the time of the last attempt
+  /// (denormalized so the client doesn't need to re-fetch the question).
+  lastCorrectAnswer String?
+  /// Whether the last attempt was correct.
+  lastAttemptCorrect Boolean?
+
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 

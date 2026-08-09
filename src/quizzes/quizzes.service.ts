@@ -259,7 +259,7 @@ Guidelines:
     let lastValidationError: unknown;
 
     for (let attempt = 1; attempt <= this.quizGenerationSchemaRetryAttempts; attempt += 1) {
-      const response = await this.gemini.generateContent({
+      const response = await this.gemini.generateContentWithQuizModel({
         contents: buildContents(retryInstruction),
         config: {
           responseMimeType: 'application/json',
@@ -895,7 +895,7 @@ Guidelines:
       uploadedFileName = uploadedFile.name;
 
       // Step 1: Transcribe the audio using Gemini
-      const transcriptionResponse = await this.gemini.generateContent({
+      const transcriptionResponse = await this.gemini.generateContentWithQuizModel({
         contents: [
           {
             parts: [
@@ -1584,12 +1584,23 @@ Guidelines:
       });
       await this.ensureSessionQuestionProgress(session.id, questionQueue);
     } else if (options?.replay) {
-      // Replay resets queue order and index, but keeps accumulated progress rows.
+      // Replay resets queue order and index, but keeps accumulated aggregate
+      // stats (timesAnswered, timesCorrect, streak) for long-term tracking.
+      // Answer-state fields MUST be cleared so the client sees a clean slate
+      // for the new run — no stale "you picked X last time" UI on first load.
       session = await this.prisma.studySession.update({
         where: { id: session.id },
         data: {
           questionQueue,
           currentIndex: 0,
+        },
+      });
+      await this.prisma.studySessionQuestionProgress.updateMany({
+        where: { sessionId: session.id },
+        data: {
+          lastUserAnswer: null,
+          lastCorrectAnswer: null,
+          lastAttemptCorrect: null,
         },
       });
       await this.ensureSessionQuestionProgress(session.id, questionQueue);
@@ -1730,6 +1741,12 @@ Guidelines:
           timesCorrect: progress?.timesCorrect ?? 0,
           streak: progress?.streak ?? 0,
           lastReviewed: progress?.lastReviewed ?? null,
+          // Answer-state fields — null until the user has answered this question
+          // at least once in this session. Used by the client to render the
+          // "review" state when navigating back to an already-answered question.
+          lastUserAnswer: progress?.lastUserAnswer ?? null,
+          lastCorrectAnswer: progress?.lastCorrectAnswer ?? null,
+          lastAttemptCorrect: progress?.lastAttemptCorrect ?? null,
         };
       })
       .filter(Boolean);
@@ -1782,6 +1799,11 @@ Guidelines:
         timesCorrect: (progress?.timesCorrect ?? 0) + (isCorrect ? 1 : 0),
         streak: isCorrect ? (progress?.streak ?? 0) + 1 : 0,
         lastReviewed: new Date(),
+        // Store answer state so clients can render "what you picked vs correct"
+        // when navigating back through already-answered questions.
+        lastUserAnswer: answerItem.answer ?? (answerItem.correct === true ? 'correct' : answerItem.correct === false ? 'incorrect' : null),
+        lastCorrectAnswer: question.correctAnswer,
+        lastAttemptCorrect: isCorrect,
       },
     });
 
@@ -1814,7 +1836,7 @@ Guidelines:
       '- feedback: concise explanation of why the answer is correct or incorrect',
     ].join('\n');
 
-    const response = await this.gemini.generateContent({
+    const response = await this.gemini.generateContentWithQuizModel({
       contents: [{ parts: [{ text: prompt }] }],
       config: {
         responseMimeType: 'application/json',
@@ -1881,7 +1903,7 @@ Guidelines:
         '- feedback: concise explanation of why the answer is correct or incorrect',
       ].join('\n');
 
-      const response = await this.gemini.generateContent({
+      const response = await this.gemini.generateContentWithQuizModel({
         contents: [
           {
             parts: [

@@ -21,6 +21,17 @@ export class GeminiService {
     });
   }
 
+  /**
+   * Quiz generation + tutor-chat use a separate, cheaper model
+   * (GEMINI_MODEL_QUIZ). Falls back to GEMINI_MODEL if the env var is unset.
+   */
+  generateContentWithQuizModel(request: Omit<GenerateContentRequest, 'model'> & { model?: string }) {
+    return this.client.models.generateContent({
+      ...request,
+      model: request.model ?? this.env.geminiModelQuiz,
+    });
+  }
+
   uploadFile(request: UploadFileRequest) {
     return this.client.files.upload(request);
   }
