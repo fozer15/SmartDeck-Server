@@ -131,7 +131,7 @@ export class SolveService {
         status: 'credits_needed' as const,
         requiredCredits: SOLVE_CREDIT_COST,
         remainingCredits: creditSummary.remainingCredits,
-        monthlyCredits: creditSummary.monthlyCredits,
+        dailyCredits: creditSummary.dailyCredits,
       };
     }
 
@@ -475,7 +475,7 @@ export class SolveService {
         status: 'credits_needed' as const,
         requiredCredits: TUTOR_CHAT_COST,
         remainingCredits: creditSummary.remainingCredits,
-        monthlyCredits: creditSummary.monthlyCredits,
+        dailyCredits: creditSummary.dailyCredits,
       };
     }
 

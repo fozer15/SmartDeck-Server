@@ -73,7 +73,7 @@ export class FilesService {
           status: 'credits_needed',
           requiredCredits: uploadCreditCost,
           remainingCredits: affordability.remainingCredits,
-          monthlyCredits: affordability.monthlyCredits,
+          dailyCredits: affordability.dailyCredits,
         };
       }
     }
@@ -166,7 +166,7 @@ export class FilesService {
           status: 'credits_needed',
           requiredCredits: resolvedCreditCost,
           remainingCredits: affordability.remainingCredits,
-          monthlyCredits: affordability.monthlyCredits,
+          dailyCredits: affordability.dailyCredits,
         };
       }
     }

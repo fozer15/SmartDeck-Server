@@ -33,12 +33,11 @@ export const APP_LIMITS = {
     MAX_PASTE_CHARACTERS_PER_REQUEST: 10000,
     MAX_PDF_FILE_SIZE_MB: 15,
     MAX_AUDIO_FILE_SIZE_MB: 25,
-    // Free plan credits roll over monthly from the last reset anchor.
-    // Yearly paid plans also use lazy monthly resets within the active billing window.
-    FREE_PLAN_RESET_INTERVAL_MONTHS: 1,
+    // Free plan: 30 credits per day, lazy-reset on first request after midnight UTC.
+    FREE_PLAN_DAILY_CREDITS: 30,
   },
   MONTHLY_CREDITS: {
-    [PlanType.FREE]: 200,
+    [PlanType.FREE]: 30,   // daily allowance (reset each UTC day)
     // PRO is unlimited — use the UNLIMITED_CREDITS sentinel (-1).
     // Usage is still recorded for abuse monitoring.
     [PlanType.PRO]: -1,
@@ -76,6 +75,9 @@ export const getMonthlyCreditsForPlan = (
 ): number => {
   return APP_LIMITS.MONTHLY_CREDITS[normalizePlanType(plan)];
 };
+
+/** Alias that makes the daily-reset semantics explicit at call sites. */
+export const getDailyCreditsForPlan = getMonthlyCreditsForPlan;
 
 export const isUnlimitedPlan = (
   plan: PlanType | string | null | undefined,

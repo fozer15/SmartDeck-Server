@@ -16,6 +16,7 @@ import {
   APP_LIMITS,
   PlanType,
   UNLIMITED_CREDITS,
+  getDailyCreditsForPlan,
   getMonthlyCreditsForPlan,
   getRemainingCredits,
   isUnlimitedPlan,
@@ -25,7 +26,8 @@ import Stripe from 'stripe';
 type CreditSummary = {
   plan: PlanType;
   isUnlimited: boolean;
-  monthlyCredits: number;
+  /** For FREE: daily allowance. For PRO: -1 (unlimited). */
+  dailyCredits: number;
   creditsUsed: number;
   remainingCredits: number;
 };
@@ -297,7 +299,7 @@ export class BillingService {
     ]);
     await this.applyLazyResetIfNeeded(userId, plan, usage);
 
-    const monthlyCredits = getMonthlyCreditsForPlan(plan);
+    const dailyCredits = getDailyCreditsForPlan(plan);
 
     return this.prisma.$transaction(async (tx) => {
       const usage = await tx.userUsageLimit.findUnique({
@@ -310,7 +312,7 @@ export class BillingService {
 
       // Unlimited plans: skip balance check but still record usage for abuse monitoring.
       if (!isUnlimitedPlan(plan)) {
-        const remainingCredits = getRemainingCredits(monthlyCredits, usage.creditsUsed);
+        const remainingCredits = getRemainingCredits(dailyCredits, usage.creditsUsed);
         if (remainingCredits < credits) {
           throw new ForbiddenException(
             `${reason} requires ${credits} credits, but only ${remainingCredits} credits remain this month.`,
@@ -458,26 +460,53 @@ export class BillingService {
   }
 
   private buildCreditSummary(plan: PlanType, creditsUsed: number): CreditSummary {
-    const monthlyCredits = getMonthlyCreditsForPlan(plan);
+    const dailyCredits = getDailyCreditsForPlan(plan);
     const unlimited = isUnlimitedPlan(plan);
 
     return {
       plan,
       isUnlimited: unlimited,
-      monthlyCredits,
+      dailyCredits,
       creditsUsed,
-      remainingCredits: getRemainingCredits(monthlyCredits, creditsUsed),
+      remainingCredits: getRemainingCredits(dailyCredits, creditsUsed),
     };
   }
 
   private getLatestFreePlanResetBoundary(lastResetDate: Date | string | null | undefined) {
     const anchor = this.normalizeResetAnchor(lastResetDate);
-    return this.getLatestMonthlyBoundary(
-      anchor,
-      Date.now(),
-      Number.POSITIVE_INFINITY,
-      APP_LIMITS.SYSTEM.FREE_PLAN_RESET_INTERVAL_MONTHS,
+    return this.getLatestDailyBoundary(anchor, Date.now());
+  }
+
+  /**
+   * Returns the start-of-UTC-day timestamp if a full calendar day has passed
+   * since `anchor`, otherwise null (no reset needed yet).
+   *
+   * Examples (UTC):
+   *   anchor = 2026-08-12T10:00Z, now = 2026-08-12T23:59Z → null (same day)
+   *   anchor = 2026-08-11T23:59Z, now = 2026-08-12T00:01Z → 2026-08-12T00:00Z
+   *   anchor = 2026-08-10T00:00Z, now = 2026-08-12T00:01Z → 2026-08-12T00:00Z (latest day)
+   */
+  private getLatestDailyBoundary(anchor: Date, nowMs: number): Date | null {
+    // Compute the start of the UTC day for `anchor` and for `now`.
+    const anchorDayStart = Date.UTC(
+      anchor.getUTCFullYear(),
+      anchor.getUTCMonth(),
+      anchor.getUTCDate(),
     );
+
+    const now = new Date(nowMs);
+    const todayStart = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+    );
+
+    // Only reset if a new UTC day has started after the anchor day.
+    if (todayStart <= anchorDayStart) {
+      return null;
+    }
+
+    return new Date(todayStart);
   }
 
   private async getLatestYearlyPlanResetBoundary(userId: string, lastResetDate: Date | string | null | undefined) {
