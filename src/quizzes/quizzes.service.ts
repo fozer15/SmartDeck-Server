@@ -602,7 +602,7 @@ Guidelines:
           status: 'credits_needed',
           requiredCredits: generationCreditCost,
           remainingCredits: affordability.remainingCredits,
-          monthlyCredits: affordability.monthlyCredits,
+          dailyCredits: affordability.dailyCredits,
         };
     }
 
@@ -631,7 +631,7 @@ Guidelines:
         status: 'credits_needed',
         requiredCredits: generationCreditCost,
         remainingCredits: affordability.remainingCredits,
-        monthlyCredits: affordability.monthlyCredits,
+        dailyCredits: affordability.dailyCredits,
       };
     }
 

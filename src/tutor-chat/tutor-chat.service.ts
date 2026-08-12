@@ -249,7 +249,7 @@ export class TutorChatService {
         status: 'credits_needed' as const,
         requiredCredits: creditCost,
         remainingCredits: creditSummary.remainingCredits,
-        monthlyCredits: creditSummary.monthlyCredits,
+        dailyCredits: creditSummary.dailyCredits,
       };
     }
 
