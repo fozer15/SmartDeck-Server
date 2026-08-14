@@ -6,6 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { SolveJobStatus } from '@prisma/client';
+import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import { BillingService } from '../billing/billing.service';
 import { CreditCostType, calculateCreditsForUnits } from '../config/plan-limits';
@@ -14,10 +16,18 @@ import { FilesService } from '../files/files.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SolveJobQueueService } from './solve-job.queue.service';
 
+// ─── Zod Schema ──────────────────────────────────────────────────────────────
+const solveResponseSchema = z.object({
+  answer: z.string(),
+  steps: z.string().optional(),
+  explanation: z.string().optional(),
+  diagram_svg: z.string().optional(),
+});
+
 // ─── Credit cost ─────────────────────────────────────────────────────────────
 const SOLVE_CREDIT_COST = calculateCreditsForUnits(CreditCostType.SOLVE, 1);
-const TUTOR_CHAT_COST = calculateCreditsForUnits(CreditCostType.TUTOR_CHAT_MESSAGE,1)
-// ─── Gemini system instruction ────────────────────────────────────────────────
+const TUTOR_CHAT_COST = calculateCreditsForUnits(CreditCostType.TUTOR_CHAT_MESSAGE, 1);
+
 // ─── Gemini system instruction ────────────────────────────────────────────────
 const SOLVE_SYSTEM_INSTRUCTION = `You are an expert academic tutor. Analyze the provided image(s) and student notes to produce a concise, complete solution strictly in valid JSON format.
 
@@ -39,12 +49,6 @@ Example JSON for STEM with Diagram (Notice the double-escaped backslashes for AL
   "diagram_svg": "<svg viewBox='0 0 100 100'><polygon points='10,90 90,90 10,10' fill='none' stroke='black'/><text x='45' y='98' font-size='10'>4</text><text x='2' y='50' font-size='10'>3</text></svg>"
 }
 
-Example JSON for Biology/General:
-{
-  "answer": "Photosynthesis occurs in the chloroplasts, converting light energy into chemical energy.",
-  "explanation": "### Process Breakdown\\n* **Light-Dependent Reactions:** Occur in thylakoid membranes..."
-}
-
 ## Formatting & LaTeX Rules
 - Content inside "steps" or "explanation" MUST use GitHub-Flavored Markdown.
 - CRITICAL: Because you are generating JSON, you MUST double-escape ALL LaTeX backslashes and newlines. 
@@ -63,7 +67,6 @@ Rules:
 - No LaTeX, no markdown, no punctuation other than a dash or colon to separate subject from concept.
 - Output ONLY the title string — no explanation, no quotes.`;
 
-
 const TUTOR_CHAT_SYSTEM_INSTRUCTION = `You are a helpful, expert AI academic tutor.
 The user is asking a follow-up question about a specific problem they recently solved.
 You will be provided with the original solution generated for the student as context.
@@ -76,12 +79,10 @@ Use this context to answer their question, simplify the explanation, provide exa
   - Display math: \\\\[ expression \\\\]
 - Be warm, encouraging, and highly educational.`;
 
-// Assuming a chat costs 1 credit, adjust this based on your CreditCostType enum if needed
-const CHAT_CREDIT_COST = 1;
-
 @Injectable()
 export class SolveService {
   private readonly logger = new Logger(SolveService.name);
+  private readonly solveGenerationRetryAttempts = 3;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -90,6 +91,35 @@ export class SolveService {
     private readonly gemini: GeminiService,
     private readonly queue: SolveJobQueueService,
   ) {}
+
+  // ─── Error Handling & Retries ──────────────────────────────────────────────
+
+  private isRetryableSolveSchemaError(error: unknown) {
+    return error instanceof SyntaxError || error instanceof z.ZodError;
+  }
+
+  private summarizeSolveSchemaError(error: unknown) {
+    if (error instanceof z.ZodError) {
+      return error.issues
+        .map((issue) => `${issue.path.join('.') || 'root'}: ${issue.message}`)
+        .join('; ');
+    }
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return 'Unknown structured-output validation error.';
+  }
+
+  private buildSolveRetryInstruction(error: unknown) {
+    const errorSummary = this.summarizeSolveSchemaError(error);
+    return [
+      'The previous response was rejected because it failed JSON parsing or schema validation.',
+      `Validation failure summary: ${errorSummary}`,
+      'Return the entire response again as valid JSON only.',
+      'CRITICAL: Ensure ALL LaTeX backslashes are double-escaped (e.g., \\\\frac instead of \\frac). A single unescaped backslash will break the JSON parser.',
+      'CRITICAL: Do not wrap your response in markdown code blocks (```json ... ```). Output raw JSON only.',
+    ].join('\n');
+  }
 
   // ─── Enqueue ───────────────────────────────────────────────────────────────
 
@@ -103,7 +133,6 @@ export class SolveService {
       throw new BadRequestException('At most 10 images are allowed per solve request.');
     }
 
-    // Verify files belong to user and are images before creating the job.
     const files = await this.prisma.uploadedFile.findMany({
       where: { id: { in: uniqueFileIds }, userId },
       select: { id: true, mimeType: true, originalName: true },
@@ -124,7 +153,6 @@ export class SolveService {
       }
     }
 
-    // Credit pre-check (non-binding — actual charge happens on completion).
     const creditSummary = await this.billing.getCreditSummary(userId);
     if (!creditSummary.isUnlimited && creditSummary.remainingCredits < SOLVE_CREDIT_COST) {
       return {
@@ -140,7 +168,6 @@ export class SolveService {
         userId,
         note: input.note ?? null,
         status: SolveJobStatus.queued,
-        // Connect source files at creation time so they're immediately accessible.
         sourceFiles: { connect: uniqueFileIds.map((id) => ({ id })) },
       },
     });
@@ -156,7 +183,6 @@ export class SolveService {
   // ─── Process (called by worker) ────────────────────────────────────────────
 
   async processSolveJob(jobId: string) {
-    // Atomic queued → processing guard to prevent double-processing.
     const transition = await this.prisma.solveJob.updateMany({
       where: { id: jobId, status: SolveJobStatus.queued },
       data: {
@@ -169,7 +195,7 @@ export class SolveService {
     });
 
     if (transition.count === 0) {
-      return; // Already picked up or cancelled — skip silently.
+      return;
     }
 
     const job = await this.prisma.solveJob.findUnique({
@@ -185,7 +211,6 @@ export class SolveService {
 
       await this.billing.consumeCredits(job.userId, SOLVE_CREDIT_COST, 'Solve');
 
-      // Create the GeneratedSolution record and link source files.
       const generatedSolution = await this.prisma.generatedSolution.create({
         data: {
           userId: job.userId,
@@ -194,7 +219,6 @@ export class SolveService {
         },
       });
 
-      // Generate a short title in the background — failures must NOT block the job.
       this.generateSolutionTitle(generatedSolution.id, solution).catch((err) => {
         this.logger.warn(`Title generation failed for solution ${generatedSolution.id}: ${err?.message}`);
       });
@@ -273,10 +297,6 @@ export class SolveService {
 
   // ─── Solution history endpoints ────────────────────────────────────────────
 
-  /**
-   * Lightweight list for the history screen.
-   * Returns title + the FIRST source image only — no solution content.
-   */
   async listSolutions(userId: string) {
     const solutions = await this.prisma.generatedSolution.findMany({
       where: { userId },
@@ -287,7 +307,6 @@ export class SolveService {
         title: true,
         createdAt: true,
         updatedAt: true,
-        // Only the first image — client renders a thumbnail
         sourceFiles: {
           select: { id: true, originalName: true, mimeType: true, size: true, r2Key: true },
           take: 1,
@@ -297,9 +316,6 @@ export class SolveService {
     return { solutions };
   }
 
-  /**
-   * Full detail view — includes solution content and all source images.
-   */
   async getSolution(userId: string, solutionId: string) {
     const solution = await this.prisma.generatedSolution.findFirst({
       where: { id: solutionId, userId },
@@ -323,12 +339,7 @@ export class SolveService {
 
   // ─── Core Gemini logic (private) ───────────────────────────────────────────
 
-  /**
-   * Fire-and-forget: ask Gemini for a short title derived from the solution
-   * content, then persist it. Called after the solution row is created.
-   */
   private async generateSolutionTitle(solutionId: string, content: string): Promise<void> {
-    // Feed only the first ~1 000 chars to keep the title call cheap.
     const excerpt = content.slice(0, 1000);
 
     const response = await this.gemini.generateContent({
@@ -339,7 +350,6 @@ export class SolveService {
     const raw = String(response.text || '').trim();
     if (!raw) return;
 
-    // Hard-cap at 80 chars in case the model disobeys.
     const title = raw.replace(/^["']|["']$/g, '').slice(0, 80);
 
     await this.prisma.generatedSolution.update({
@@ -361,11 +371,10 @@ export class SolveService {
       files.map((f) => this.filesService.getObjectBuffer(f.r2Key)),
     );
 
-    // FIX 1: Correctly parse the buffer so Gemini actually receives the image!
-    const parts: Array<Record<string, unknown>> = files.map((file, i) => ({
+    const baseParts: Array<Record<string, unknown>> = files.map((file, i) => ({
       inlineData: {
         mimeType: file.mimeType,
-        data: buffers[i].buffer.toString('base64'), 
+        data: buffers[i].buffer.toString('base64'),
       },
     }));
 
@@ -373,35 +382,72 @@ export class SolveService {
       ? `Please solve the problem(s) in the image(s). Additional note from the student: ${input.note.trim()}`
       : 'Please solve the problem(s) shown in the image(s).';
 
-    parts.push({ text: userText });
+    let retryInstruction: string | undefined;
+    let lastValidationError: unknown;
 
-    // FIX 2: Strict system instruction so Gemini escapes LaTeX properly itself
-    const response = await this.gemini.generateContent({
-      contents: [{ role: 'user', parts }],
-      config: {
-        systemInstruction: `${SOLVE_SYSTEM_INSTRUCTION}\nIMPORTANT: You are generating raw JSON. Every backslash in LaTeX commands MUST be double-escaped (e.g. \\\\sqrt instead of \\sqrt).`,
-        responseMimeType: 'application/json',
-      },
-    });
+    // Retry Loop for Gemini Validation
+    for (let attempt = 1; attempt <= this.solveGenerationRetryAttempts; attempt += 1) {
+      const parts = [...baseParts];
+      parts.push({
+        text: retryInstruction ? `${userText}\n\n${retryInstruction}` : userText,
+      });
 
-    const rawText = String(response.text || '').trim();
-    if (!rawText) {
-      throw new InternalServerErrorException('Gemini returned an empty solution.');
+      const response = await this.gemini.generateContent({
+        contents: [{ role: 'user', parts }],
+        config: {
+          systemInstruction: `${SOLVE_SYSTEM_INSTRUCTION}\nIMPORTANT: You are generating raw JSON. Every backslash in LaTeX commands MUST be double-escaped (e.g. \\\\sqrt instead of \\sqrt).`,
+          responseMimeType: 'application/json',
+          // Optional: if your gemini service wraps standard Google AI SDK, you can also pass responseSchema here:
+          // responseSchema: zodToJsonSchema(solveResponseSchema as any),
+        },
+      });
+
+      const rawText = String(response.text || '').trim();
+
+      try {
+        if (!rawText) {
+          throw new SyntaxError('Model returned an empty JSON response.');
+        }
+
+        // Clean up markdown block wrappers occasionally output by the model despite responseMimeType
+        const cleanText = rawText.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+
+        // 1. Attempt JSON parsing
+        const parsedData = JSON.parse(cleanText);
+
+        // 2. Validate against Zod schema
+        const validatedData = solveResponseSchema.parse(parsedData);
+
+        return JSON.stringify(validatedData);
+      } catch (error) {
+        if (!this.isRetryableSolveSchemaError(error)) {
+          throw error;
+        }
+
+        lastValidationError = error;
+        const summary = this.summarizeSolveSchemaError(error);
+
+        if (attempt >= this.solveGenerationRetryAttempts) {
+          this.logger.error(
+            `Solve generation returned invalid structured data after ${attempt} attempts: ${summary}`,
+          );
+          throw new InternalServerErrorException(
+            `Solve generation failed validation after ${this.solveGenerationRetryAttempts} attempts: ${summary}`,
+          );
+        }
+
+        this.logger.warn(
+          `Retrying solve generation after invalid structured response on attempt ${attempt}/${this.solveGenerationRetryAttempts}: ${summary}`,
+        );
+        
+        retryInstruction = this.buildSolveRetryInstruction(error);
+      }
     }
 
-    try {
-      // FIX 3: Parse directly without regex! Gemini is now outputting valid JSON.
-      const parsedSolution = JSON.parse(rawText);
-      return JSON.stringify(parsedSolution);
-    } catch (err) {
-      this.logger.error(`Failed to parse Gemini JSON output: ${err.message}`);
-      this.logger.debug(`Raw payload was: ${rawText}`);
-      throw new InternalServerErrorException('Invalid solution format returned from solver.');
-    }
+    throw new InternalServerErrorException('Solve generation failed.');
   }
 
   async deleteSolution(userId: string, solutionId: string) {
-    // 1. Verify ownership and existence
     const solution = await this.prisma.generatedSolution.findFirst({
       where: { id: solutionId, userId },
     });
@@ -410,7 +456,6 @@ export class SolveService {
       throw new NotFoundException('Solution not found');
     }
 
-    // 2. Delete the solution
     await this.prisma.generatedSolution.delete({
       where: { id: solutionId },
     });
@@ -419,56 +464,51 @@ export class SolveService {
   }
 
   // ─── Tutor Chat ────────────────────────────────────────────────────────────
-  
+
   async getSolutionMessages(userId: string, solutionId: string, limit: number, cursor?: string) {
-  // 1. Verify the solution belongs to the user
     const solutionExists = await this.prisma.generatedSolution.findFirst({
       where: { id: solutionId, userId },
-      select: { id: true }
+      select: { id: true },
     });
 
     if (!solutionExists) {
       throw new NotFoundException('Solution not found or access denied');
     }
 
-    // 2. Build the pagination query
     const query: any = {
       where: { solutionId, userId },
       take: limit,
-      // Fetch newest messages first so we get the most recent page
-      orderBy: { createdAt: 'desc' }, 
+      orderBy: { createdAt: 'desc' },
     };
 
     if (cursor) {
       query.cursor = { id: cursor };
-      query.skip = 1; // Skip the cursor itself
+      query.skip = 1;
     }
 
-    // 3. Fetch from DB
     const messages = await this.prisma.solutionMessage.findMany(query);
-    
-    // 4. Determine if there is a next page (older messages)
     const nextCursor = messages.length === limit ? messages[messages.length - 1].id : null;
 
     return {
-      // Reverse the array so the client receives them in chronological order (oldest to newest)
       messages: messages.reverse(),
       nextCursor,
     };
   }
 
-  async chatAboutSolution(userId: string, solutionId: string, input: { message: string; history?: Array<{role: string, text: string}> }) {
-    // 1. Verify solution exists and belongs to the user
+  async chatAboutSolution(
+    userId: string,
+    solutionId: string,
+    input: { message: string; history?: Array<{ role: string; text: string }> },
+  ) {
     const solution = await this.prisma.generatedSolution.findFirst({
       where: { id: solutionId, userId },
-      select: { id: true, content: true }
+      select: { id: true, content: true },
     });
-    
+
     if (!solution) {
       throw new NotFoundException('Solution not found or access denied');
     }
 
-    // 2. Pre-check credits
     const creditSummary = await this.billing.getCreditSummary(userId);
     if (!creditSummary.isUnlimited && creditSummary.remainingCredits < TUTOR_CHAT_COST) {
       return {
@@ -479,63 +519,58 @@ export class SolveService {
       };
     }
 
-    // 3. Record the user's message in the database
     await this.prisma.solutionMessage.create({
       data: {
         userId,
         solutionId,
         role: 'user',
         text: input.message,
-      }
+      },
     });
 
-    // 4. Build the context and conversation history
     const parts = [];
-    
-    // Inject the original solution context secretly so Gemini knows what we are talking about
     const contextPrompt = `Context: The student is asking about the following solution they received:\n\n${solution.content}\n\n`;
-    
-    // If the client sends chat history, append it
+
     if (input.history && input.history.length > 0) {
-      const historyString = input.history.map(msg => `${msg.role === 'user' ? 'Student' : 'Tutor'}: ${msg.text}`).join('\n\n');
-      parts.push({ text: `${contextPrompt}Conversation History:\n${historyString}\n\nStudent's new message: ${input.message}` });
+      const historyString = input.history
+        .map((msg) => `${msg.role === 'user' ? 'Student' : 'Tutor'}: ${msg.text}`)
+        .join('\n\n');
+      parts.push({
+        text: `${contextPrompt}Conversation History:\n${historyString}\n\nStudent's new message: ${input.message}`,
+      });
     } else {
       parts.push({ text: `${contextPrompt}Student's question: ${input.message}` });
     }
 
-    // 5. Ask Gemini
     try {
       const response = await this.gemini.generateContent({
         contents: [{ role: 'user', parts }],
-        config: { 
+        config: {
           systemInstruction: TUTOR_CHAT_SYSTEM_INSTRUCTION,
         },
       });
 
       const rawText = String(response.text || '').trim();
-      
+
       if (!rawText) {
         throw new InternalServerErrorException('AI returned an empty response.');
       }
 
-      // 6. Record the AI's response in the database
       await this.prisma.solutionMessage.create({
         data: {
           userId,
           solutionId,
           role: 'assistant',
           text: rawText,
-        }
+        },
       });
 
-      // 7. Consume Credits
       await this.billing.consumeCredits(userId, TUTOR_CHAT_COST, 'Tutor Chat');
-      
+
       return { reply: rawText };
-      
     } catch (error) {
       this.logger.error(`Tutor Chat failed for solution ${solutionId}:`, error);
       throw new InternalServerErrorException('Failed to communicate with AI Tutor.');
     }
-}
+  }
 }
