@@ -35,37 +35,41 @@ export class AuthService {
   }
 
   async signIn(dto:SignInDto) {
+    let decodedToken: admin.auth.DecodedIdToken;
+
     try {
       // Verify Firebase ID token
-      const decodedToken = await admin.auth().verifyIdToken(dto.idToken);
-      
-      // Extract user info from Firebase token
-      const { uid, email, name, picture, firebase } = decodedToken;
-      const {school,degree,name:OnboardingName, lang, deviceId} = dto;
-      const user = await this.usersService.findOrCreate({
-        id: uid,
-        email: email,
-        school:school || undefined,
-        degree:degree || undefined,
-        preferredLanguage:lang as AppLanguage || "en",
-        name: OnboardingName || name || undefined,
-        avatarUrl: picture || undefined,
-        deviceId
-      });
-
-      return {
-        user,
-        accessToken: dto.idToken, // You can use Firebase token or generate your own JWT
-      };
+      decodedToken = await this.firebaseApp.auth().verifyIdToken(dto.idToken);
     } catch (error) {
       console.error('Error verifying Firebase ID token:', error);
       throw new UnauthorizedException('Invalid Firebase token');
     }
+
+    // Database/profile failures must not be reported as invalid Firebase
+    // tokens. Anonymous users legitimately have no email until they link an
+    // account, so `email` remains undefined for their initial guest profile.
+    const { uid, email, name, picture } = decodedToken;
+    const {school, degree, name: onboardingName, lang, deviceId} = dto;
+    const user = await this.usersService.findOrCreate({
+      id: uid,
+      email,
+      school: school || undefined,
+      degree: degree || undefined,
+      preferredLanguage: (lang as AppLanguage) || 'en',
+      name: onboardingName || name || undefined,
+      avatarUrl: picture || undefined,
+      deviceId,
+    });
+
+    return {
+      user,
+      accessToken: dto.idToken,
+    };
   }
 
   async verifyToken(idToken: string) {
     try {
-      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      const decodedToken = await this.firebaseApp.auth().verifyIdToken(idToken);
       return decodedToken;
     } catch {
       throw new UnauthorizedException('Invalid or expired token');

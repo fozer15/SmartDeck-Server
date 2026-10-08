@@ -9,7 +9,8 @@ datasource db {
 
 model User {
   id            String          @id 
-  email         String          @unique 
+  // Anonymous Firebase users do not have an email until an account is linked.
+  email         String?         @unique
   name          String?
   avatarUrl     String?
   school        String?

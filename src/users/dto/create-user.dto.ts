@@ -7,7 +7,7 @@ export class CreateUserDto {
 
   @IsOptional()
   @IsEmail()
-  email?: string;
+  email?: string | null;
 
   @IsOptional()
   @IsString()
